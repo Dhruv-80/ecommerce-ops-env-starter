@@ -1,0 +1,13 @@
+spec_version: 1
+name: ecommerce-ops-env
+type: text
+runtime: docker
+app: server/app.py
+port: 7860
+description: >
+  E-commerce operations environment where an AI agent resolves refund queues,
+  inventory discrepancies, and supplier cancellation crises.
+tags:
+  - openenv
+  - ecommerce
+  - operations
