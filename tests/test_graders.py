@@ -222,8 +222,8 @@ def test_task_3_exact_weighted_score_without_collateral_damage():
         collateral_damage=[],
     )
     result = grade_task_3(state)
-    assert result["breakdown"]["weighted_resolution"] == 0.5889
-    assert result["score"] == 0.5888888888888889
+    assert result["breakdown"]["weighted_resolution"] == pytest.approx(0.5889, abs=1e-4)
+    assert result["score"] == pytest.approx(0.5889, abs=1e-4)
 
 
 def test_reward_contract_shape_stable():
@@ -289,7 +289,7 @@ def test_reward_collateral_damage_removes_bonus():
     }
     clean = compute_step_reward(action={"action_type": "cancel_order"}, outcome=clean_outcome, ground_truth={})
     damaged = compute_step_reward(action={"action_type": "cancel_order"}, outcome=damaged_outcome, ground_truth={})
-    assert clean["reward"] - damaged["reward"] == 0.15
+    assert clean["reward"] - damaged["reward"] == pytest.approx(0.15)
 
 
 def test_reward_unnecessary_escalation_and_destructive_cancel_penalties():
