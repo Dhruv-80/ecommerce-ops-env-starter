@@ -2,7 +2,7 @@ from typing import Any, Dict
 
 
 def compute_step_reward(*, action: Dict[str, Any], outcome: Dict[str, Any], ground_truth: Dict[str, Any]) -> Dict[str, Any]:
-    """IMPLEMENT: keep reward shaping simple and deterministic."""
+    """Compute deterministic step reward using fixed bonuses and penalties."""
     reward = 0.0
     breakdown = {
         "action_type": 0.0,
