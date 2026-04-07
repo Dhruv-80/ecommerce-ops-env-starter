@@ -3,15 +3,20 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 try:
-    from ..models import EcommerceAction, EcommerceObservation, EcommerceState, OrderRecord, TicketRecord, InventoryRecord
+    from ..models import EcommerceAction, EcommerceObservation, EcommerceState, OrderItem, OrderRecord, TicketRecord, InventoryRecord
     from .tasks import get_task_bundle
     from .reward import compute_step_reward
     from .grader import grade_episode
 except ImportError:
-    from models import EcommerceAction, EcommerceObservation, EcommerceState, OrderRecord, TicketRecord, InventoryRecord
+    from models import EcommerceAction, EcommerceObservation, EcommerceState, OrderItem, OrderRecord, TicketRecord, InventoryRecord
     from server.tasks import get_task_bundle
     from server.reward import compute_step_reward
     from server.grader import grade_episode
+
+
+def _build_order_record(o: Dict[str, Any]) -> OrderRecord:
+    items = [OrderItem(**i) if isinstance(i, dict) else i for i in o.get("items", [])]
+    return OrderRecord(**{**o, "items": items})
 
 
 class EcommerceEnvironment:
@@ -31,10 +36,7 @@ class EcommerceEnvironment:
             episode_id=str(uuid4()),
             task_id=task_id,
             max_steps=bundle["max_steps"],
-            orders=[
-                OrderRecord(**{**o, "items": [OrderItem(**i) if isinstance(i, dict) else i for i in o.get("items", [])]})
-                for o in init.get("orders", [])
-            ],
+            orders=[_build_order_record(o) for o in init.get("orders", [])],
             inventory=[InventoryRecord(**i) for i in init.get("inventory", [])],
             tickets=[TicketRecord(**t) for t in init.get("tickets", [])],
             ground_truth=bundle.get("ground_truth", {}),
