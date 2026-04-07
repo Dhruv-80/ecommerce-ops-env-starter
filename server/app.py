@@ -78,9 +78,10 @@ def health() -> Dict[str, Any]:
     return {"ok": True, "status": "healthy"}
 
 
-def reset(req: ResetRequest) -> EcommerceObservation:
+def reset(req: Optional[ResetRequest] = None) -> EcommerceObservation:
+    task_id = req.task_id if req is not None else "task_1"
     try:
-        return env.reset(task_id=req.task_id)
+        return env.reset(task_id=task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
