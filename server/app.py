@@ -49,7 +49,15 @@ class StepRequest(BaseModel):
 
 env = EcommerceEnvironment()
 
-app = FastAPI(title="ecommerce-ops-env")
+app = FastAPI(
+    title="Ecommerce Ops Environment API",
+    version="1.0.0",
+    description=(
+        "Deterministic OpenEnv-style ecommerce operations environment with multi-step tasks for "
+        "refund processing, inventory reconciliation, and supplier-cancellation crisis handling."
+    ),
+    contact={"name": "Ecommerce Ops Env Team"},
+)
 if create_fastapi_app is not None:
     try:
         openenv_app = create_fastapi_app(
@@ -205,10 +213,87 @@ def baseline() -> Dict[str, Dict[str, Any]]:
     }
 
 
-app.add_api_route("/health", health, methods=["GET"])
-app.add_api_route("/reset", reset, methods=["POST"])
-app.add_api_route("/step", step, methods=["POST"])
-app.add_api_route("/state", state, methods=["GET"])
-app.add_api_route("/tasks", tasks, methods=["GET"])
-app.add_api_route("/grader", grader, methods=["POST"])
-app.add_api_route("/baseline", baseline, methods=["GET"])
+app.add_api_route(
+    "/health",
+    health,
+    methods=["GET"],
+    tags=["System"],
+    summary="Health check",
+    description="Returns service liveness status.",
+    response_description="Liveness response.",
+)
+app.add_api_route(
+    "/reset",
+    reset,
+    methods=["POST"],
+    tags=["Episode"],
+    summary="Reset environment episode",
+    description="Starts a new deterministic episode for the selected task.",
+    response_description="Initial observation for the selected task.",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "example": {"task_id": "task_1"},
+                }
+            }
+        }
+    },
+)
+app.add_api_route(
+    "/step",
+    step,
+    methods=["POST"],
+    tags=["Episode"],
+    summary="Apply one action",
+    description="Applies one environment action and returns the next observation with reward.",
+    response_description="Next observation after action execution.",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "action_type": "inspect_order",
+                        "order_id": "O1",
+                    },
+                }
+            }
+        }
+    },
+)
+app.add_api_route(
+    "/state",
+    state,
+    methods=["GET"],
+    tags=["Episode"],
+    summary="Get internal state",
+    description="Returns full internal environment state for debugging and grading inspection.",
+    response_description="Current internal state.",
+)
+app.add_api_route(
+    "/tasks",
+    tasks,
+    methods=["GET"],
+    tags=["Catalog"],
+    summary="List available tasks",
+    description="Returns task metadata and difficulty information.",
+    response_description="Task catalog.",
+)
+app.add_api_route(
+    "/grader",
+    grader,
+    methods=["POST"],
+    tags=["Evaluation"],
+    summary="Grade current episode",
+    description="Computes a normalized score and breakdown for the current episode state.",
+    response_description="Episode score and breakdown.",
+)
+app.add_api_route(
+    "/baseline",
+    baseline,
+    methods=["GET"],
+    tags=["Evaluation"],
+    summary="Run baseline policy",
+    description="Runs deterministic baseline policy on all tasks and returns task-level scores.",
+    response_description="Baseline results across task_1, task_2, and task_3.",
+)

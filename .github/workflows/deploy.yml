@@ -200,6 +200,32 @@ jobs:
             fi
           fi
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [[ -f requirements.txt ]]; then
+            pip install -r requirements.txt
+          elif [[ -f pyproject.toml ]]; then
+            pip install .[test] || pip install .
+          else
+            echo "No supported Python dependency file found for tests."
+            exit 1
+          fi
+
+      - name: Run pytest gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

@@ -83,3 +83,30 @@ Optional: view logs while running detached:
 ```bash
 docker logs -f ecommerce-ops-env
 ```
+
+## Submission
+- Deployed Space URL: https://huggingface.co/spaces/Gloomytarsier3/my-env
+- Live API base URL: https://gloomytarsier3-my-env.hf.space
+- Swagger docs URL: https://gloomytarsier3-my-env.hf.space/docs
+
+Quick demo sequence:
+```bash
+curl -X POST https://gloomytarsier3-my-env.hf.space/reset \
+	-H "Content-Type: application/json" \
+	-d '{"task_id":"task_1"}'
+
+curl -X POST https://gloomytarsier3-my-env.hf.space/step \
+	-H "Content-Type: application/json" \
+	-d '{"action_type":"inspect_order","order_id":"O1"}'
+
+curl -X POST https://gloomytarsier3-my-env.hf.space/grader
+```
+
+Baseline run command from inference script:
+```bash
+API_BASE_URL=https://router.huggingface.co/v1 \
+MODEL_NAME=gpt-4o-mini \
+HF_TOKEN=your_token \
+ENV_BASE_URL=https://gloomytarsier3-my-env.hf.space \
+python inference.py
+```
