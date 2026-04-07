@@ -1,0 +1,198 @@
+@baseUrl = http://localhost:7860
+
+### Health
+GET {{baseUrl}}/health
+
+### Tasks catalog
+GET {{baseUrl}}/tasks
+
+### Baseline run for all tasks
+GET {{baseUrl}}/baseline
+
+###
+### Task 1: Refund Queue Processing
+###
+
+### Reset task_1
+POST {{baseUrl}}/reset
+Content-Type: application/json
+
+{
+  "task_id": "task_1"
+}
+
+### Step task_1: inspect one order
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "inspect_order",
+  "order_id": "O1"
+}
+
+### Step task_1: approve refund within 30 days
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "process_refund",
+  "ticket_id": "T1",
+  "order_id": "O1",
+  "reason": "within_30_days"
+}
+
+### Step task_1: reject refund outside 30 days
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "reject_refund",
+  "ticket_id": "T4",
+  "order_id": "O4",
+  "reason": "outside_30_days"
+}
+
+### State after some task_1 actions
+GET {{baseUrl}}/state
+
+### Grade current episode
+POST {{baseUrl}}/grader
+
+###
+### Task 2: Inventory Reconciliation
+###
+
+### Reset task_2
+POST {{baseUrl}}/reset
+Content-Type: application/json
+
+{
+  "task_id": "task_2"
+}
+
+### Step task_2: correct inventory update
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "update_inventory",
+  "sku": "SKU-A",
+  "warehouse": "W1",
+  "quantity": 2
+}
+
+### Step task_2: intentionally wrong inventory update for penalty check
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "update_inventory",
+  "sku": "SKU-C",
+  "warehouse": "W1",
+  "quantity": 7
+}
+
+### Step task_2: route order
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "route_order",
+  "order_id": "O201",
+  "warehouse": "W1"
+}
+
+### State after task_2 actions
+GET {{baseUrl}}/state
+
+### Grade current episode
+POST {{baseUrl}}/grader
+
+###
+### Task 3: Supplier Cancellation Crisis
+###
+
+### Reset task_3
+POST {{baseUrl}}/reset
+Content-Type: application/json
+
+{
+  "task_id": "task_3"
+}
+
+### Step task_3: apply substitute to affected order
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "apply_substitute",
+  "order_id": "O301",
+  "sku": "SKU-X-SUB"
+}
+
+### Step task_3: send compensation
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "send_compensation",
+  "order_id": "O301",
+  "compensation_type": "coupon_5"
+}
+
+### Step task_3: cancel expected-cancel order
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "cancel_order",
+  "order_id": "O302",
+  "reason": "supplier_cancelled"
+}
+
+### Step task_3: intentional collateral damage case
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "cancel_order",
+  "order_id": "O304",
+  "reason": "intentional_negative_test"
+}
+
+### State after task_3 actions
+GET {{baseUrl}}/state
+
+### Grade current episode
+POST {{baseUrl}}/grader
+
+###
+### Negative tests
+###
+
+### Invalid action type
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "do_magic",
+  "order_id": "O1"
+}
+
+### Missing required fields for route_order
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "route_order",
+  "order_id": "O201"
+}
+
+### Non-existent entity
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "inspect_order",
+  "order_id": "O9999"
+}
