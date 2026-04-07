@@ -3,12 +3,12 @@ from typing import Any, Dict, Optional, Tuple
 from uuid import uuid4
 
 try:
-    from ..models import EcommerceAction, EcommerceObservation, EcommerceState, OrderRecord, TicketRecord, InventoryRecord
+    from ..models import EcommerceAction, EcommerceObservation, EcommerceState, OrderItem, OrderRecord, TicketRecord, InventoryRecord
     from .tasks import get_task_bundle
     from .reward import compute_step_reward
     from .grader import grade_episode
 except ImportError:
-    from models import EcommerceAction, EcommerceObservation, EcommerceState, OrderRecord, TicketRecord, InventoryRecord
+    from models import EcommerceAction, EcommerceObservation, EcommerceState, OrderItem, OrderRecord, TicketRecord, InventoryRecord
     from server.tasks import get_task_bundle
     from server.reward import compute_step_reward
     from server.grader import grade_episode
@@ -32,8 +32,27 @@ class EcommerceEnvironment:
         orders = []
         for order in init.get("orders", []):
             mapped = dict(order)
-            mapped["items"] = [item if hasattr(item, "sku") else type("OrderItemProxy", (), item)() for item in order.get("items", [])]
+            mapped["items"] = [
+                item if isinstance(item, OrderItem) else OrderItem(**item)
+                for item in order.get("items", [])
+            ]
             orders.append(OrderRecord(**mapped))
+
+        tickets = [TicketRecord(**t) for t in init.get("tickets", [])]
+
+        # Ensure every ticket's order_id has a corresponding OrderRecord so
+        # that refund/dispute transitions can succeed even when the task bundle
+        # does not pre-populate the orders list.
+        existing_order_ids = {o.order_id for o in orders}
+        for ticket in tickets:
+            if ticket.order_id not in existing_order_ids:
+                orders.append(OrderRecord(
+                    order_id=ticket.order_id,
+                    customer_id=ticket.customer_id,
+                    customer_tier="standard",
+                    status="PENDING",
+                ))
+                existing_order_ids.add(ticket.order_id)
 
         self._state = EcommerceState(
             episode_id=str(uuid4()),
@@ -41,7 +60,7 @@ class EcommerceEnvironment:
             max_steps=bundle["max_steps"],
             orders=orders,
             inventory=[InventoryRecord(**i) for i in init.get("inventory", [])],
-            tickets=[TicketRecord(**t) for t in init.get("tickets", [])],
+            tickets=tickets,
             ground_truth=bundle.get("ground_truth", {}),
         )
         self._action_history = set()
