@@ -1,26 +1,52 @@
-# ecommerce-ops-env starter
+# ecommerce-ops-env
 
-Starter scaffold for an OpenEnv-style e-commerce operations environment.
+Deterministic OpenEnv-style e-commerce operations environment with 3 tasks:
+`task_1` (refund queue), `task_2` (inventory reconciliation), `task_3` (supplier cancellation crisis).
 
-## Goal
-Build a 3-task environment where an agent resolves:
-1. Refund queue processing
-2. Inventory reconciliation
-3. Supplier cancellation crisis
+## Project goal
+Provide a stable benchmark loop (`reset`/`step`/`state`) that supports structured agent actions, partial observations, and grading via:
+- `get_task_bundle(task_id)` from `server/tasks.py`
+- `grade_episode(task_id, state)` from `server/grader.py`
 
-## Recommended work split
-- Teammate A: `server/tasks.py`, `server/reward.py`, `server/grader.py`, `tests/test_graders.py`
-- Teammate B: `models.py`, `server/ecommerce_environment.py`, `server/app.py`, `inference.py`, Docker/deployment/docs
+## Run locally
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn server.app:app --host 0.0.0.0 --port 7860
+```
 
-## Merge order
-1. Lock schemas in `models.py`
-2. Lock task ground truth in `server/tasks.py`
-3. Lock reward + grader contracts
-4. Wire environment step logic
-5. Expose API + baseline inference
+Smoke checks:
+```bash
+curl http://localhost:7860/health
+curl -X POST http://localhost:7860/reset -H "Content-Type: application/json" -d '{"task_id":"task_1"}'
+curl -X POST http://localhost:7860/step -H "Content-Type: application/json" -d '{"action_type":"inspect_order","order_id":"O1"}'
+```
 
-## First run checklist
-- Confirm the exact OpenEnv package version you install
-- Verify import path for `openenv.core.env_server`
-- Fill in the TODOs marked `IMPLEMENT:`
-- Deploy a skeleton to HF Spaces early
+## Endpoints
+- `GET /health`
+- `POST /reset` with body `{"task_id":"task_1|task_2|task_3"}`
+- `POST /step` with `EcommerceAction`-shaped payload
+- `GET /state`
+- `GET /tasks`
+- `POST /grader`
+- `GET /baseline`
+
+## Action / Observation / State summary
+- `EcommerceAction`: `action_type` plus optional fields (`order_id`, `ticket_id`, `sku`, `warehouse`, `quantity`, `reason`, `compensation_type`).
+- `EcommerceObservation`: partial by design; includes `done`, `reward`, `metadata`, `open_tickets`, order summaries, inventory snapshot, last action result/error, task info, and `steps_remaining`.
+- `EcommerceState`: full internal state with records (`orders`, `tickets`, `inventory`), episode counters, task metadata, reward tracking, and ground truth.
+- Full order detail is accessed via `inspect_order` (non-mutating).
+
+## Baseline runner
+Run all tasks sequentially with strict JSON action parsing:
+```bash
+API_BASE_URL=http://localhost:7860 MODEL_NAME=gpt-4o-mini HF_TOKEN=dummy python inference.py
+```
+
+## Quick deployment note
+Docker image runs on port `7860`:
+```bash
+docker build -t ecommerce-ops-env .
+docker run --rm -p 7860:7860 ecommerce-ops-env
+```

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 try:
@@ -27,6 +27,18 @@ class OrderItem:
     status: str = "PENDING"
     substitute_sku: Optional[str] = None
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "OrderItem":
+        return cls(
+            sku=str(payload.get("sku", "")),
+            quantity=int(payload.get("quantity", 0)),
+            status=str(payload.get("status", "PENDING")),
+            substitute_sku=payload.get("substitute_sku"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass
 class OrderRecord:
@@ -39,6 +51,25 @@ class OrderRecord:
     compensation: List[str] = field(default_factory=list)
     touched: bool = False
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "OrderRecord":
+        items_payload = payload.get("items", []) or []
+        items = [OrderItem.from_dict(item) for item in items_payload]
+        compensation = [str(value) for value in (payload.get("compensation", []) or [])]
+        return cls(
+            order_id=str(payload.get("order_id", "")),
+            customer_id=str(payload.get("customer_id", "")),
+            customer_tier=str(payload.get("customer_tier", "standard")),
+            status=str(payload.get("status", "PENDING")),
+            items=items,
+            warehouse=payload.get("warehouse"),
+            compensation=compensation,
+            touched=bool(payload.get("touched", False)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass
 class TicketRecord:
@@ -49,12 +80,37 @@ class TicketRecord:
     created_days_ago: int
     status: str = "OPEN"
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "TicketRecord":
+        return cls(
+            ticket_id=str(payload.get("ticket_id", "")),
+            order_id=str(payload.get("order_id", "")),
+            customer_id=str(payload.get("customer_id", "")),
+            reason=str(payload.get("reason", "")),
+            created_days_ago=int(payload.get("created_days_ago", 0)),
+            status=str(payload.get("status", "OPEN")),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass
 class InventoryRecord:
     sku: str
     warehouse: str
     quantity: int
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "InventoryRecord":
+        return cls(
+            sku=str(payload.get("sku", "")),
+            warehouse=str(payload.get("warehouse", "")),
+            quantity=int(payload.get("quantity", 0)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -68,6 +124,22 @@ class EcommerceAction(Action):
     reason: Optional[str] = None
     compensation_type: Optional[str] = None
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "EcommerceAction":
+        return cls(
+            action_type=str(payload.get("action_type", "")),
+            order_id=payload.get("order_id"),
+            ticket_id=payload.get("ticket_id"),
+            sku=payload.get("sku"),
+            warehouse=payload.get("warehouse"),
+            quantity=payload.get("quantity"),
+            reason=payload.get("reason"),
+            compensation_type=payload.get("compensation_type"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass
 class EcommerceObservation(Observation):
@@ -79,6 +151,9 @@ class EcommerceObservation(Observation):
     task_description: str = ""
     task_id: str = ""
     steps_remaining: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -96,3 +171,6 @@ class EcommerceState(State):
     cumulative_reward: float = 0.0
     episode_done: bool = False
     ground_truth: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
