@@ -1,6 +1,7 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 try:
@@ -74,7 +75,7 @@ if create_fastapi_app is not None:
 
 
 def health() -> Dict[str, Any]:
-    return {"ok": True}
+    return {"ok": True, "status": "healthy"}
 
 
 def reset(req: ResetRequest) -> EcommerceObservation:
@@ -213,6 +214,127 @@ def baseline() -> Dict[str, Dict[str, Any]]:
     }
 
 
+def metadata() -> Dict[str, Any]:
+    return {
+        "name": "ecommerce-ops-env",
+        "description": (
+            "E-commerce operations environment where an AI agent resolves "
+            "refund queues, inventory discrepancies, and supplier cancellation crises."
+        ),
+        "version": "0.1.0",
+        "tasks": list(task_catalog().keys()),
+    }
+
+
+def schema() -> Dict[str, Any]:
+    return {
+        "action": {
+            "type": "object",
+            "properties": {
+                "action_type": {"type": "string"},
+                "order_id": {"type": "string"},
+                "ticket_id": {"type": "string"},
+                "sku": {"type": "string"},
+                "warehouse": {"type": "string"},
+                "quantity": {"type": "integer"},
+                "reason": {"type": "string"},
+                "compensation_type": {"type": "string"},
+            },
+            "required": ["action_type"],
+        },
+        "observation": {
+            "type": "object",
+            "properties": {
+                "done": {"type": "boolean"},
+                "reward": {"type": "number"},
+                "metadata": {"type": "object"},
+                "open_tickets": {"type": "array"},
+                "orders": {"type": "array"},
+                "inventory": {"type": "array"},
+                "last_action_result": {"type": "string"},
+                "last_action_error": {"type": "string"},
+                "task_description": {"type": "string"},
+                "task_id": {"type": "string"},
+                "steps_remaining": {"type": "integer"},
+            },
+        },
+        "state": {
+            "type": "object",
+            "properties": {
+                "episode_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "step_count": {"type": "integer"},
+                "max_steps": {"type": "integer"},
+                "episode_done": {"type": "boolean"},
+                "cumulative_reward": {"type": "number"},
+            },
+        },
+    }
+
+
+async def mcp_handler(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    req_id = body.get("id", 1)
+    method = body.get("method", "")
+
+    if method == "initialize":
+        return JSONResponse({
+            "jsonrpc": "2.0", "id": req_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "ecommerce-ops-env", "version": "0.1.0"},
+                "capabilities": {"tools": {}},
+            },
+        })
+
+    if method == "tools/list":
+        tools: List[Dict[str, Any]] = [
+            {
+                "name": "reset",
+                "description": "Reset the environment to a given task.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"task_id": {"type": "string", "default": "task_1"}},
+                },
+            },
+            {
+                "name": "step",
+                "description": "Take an action in the environment.",
+                "inputSchema": schema()["action"],
+            },
+        ]
+        return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}})
+
+    if method == "tools/call":
+        params = body.get("params", {})
+        tool_name = params.get("name", "")
+        args = params.get("arguments", {})
+        try:
+            if tool_name == "reset":
+                obs = env.reset(task_id=args.get("task_id", "task_1"))
+                return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": str(obs.to_dict())}]}})
+            if tool_name == "step":
+                action = EcommerceAction(
+                    action_type=args.get("action_type", ""),
+                    order_id=args.get("order_id"),
+                    ticket_id=args.get("ticket_id"),
+                    sku=args.get("sku"),
+                    warehouse=args.get("warehouse"),
+                    quantity=args.get("quantity"),
+                    reason=args.get("reason"),
+                    compensation_type=args.get("compensation_type"),
+                )
+                obs = env.step(action)
+                return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": str(obs.to_dict())}]}})
+        except Exception as exc:
+            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(exc)}})
+
+    return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {method}"}})
+
+
 app.add_api_route(
     "/health",
     health,
@@ -296,4 +418,28 @@ app.add_api_route(
     summary="Run baseline policy",
     description="Runs deterministic baseline policy on all tasks and returns task-level scores.",
     response_description="Baseline results across task_1, task_2, and task_3.",
+)
+app.add_api_route(
+    "/metadata",
+    metadata,
+    methods=["GET"],
+    tags=["System"],
+    summary="Environment metadata",
+    description="Returns environment metadata used by integration layers.",
+)
+app.add_api_route(
+    "/schema",
+    schema,
+    methods=["GET"],
+    tags=["System"],
+    summary="Action/observation/state schema",
+    description="Returns high-level JSON schema for action, observation, and state payloads.",
+)
+app.add_api_route(
+    "/mcp",
+    mcp_handler,
+    methods=["POST"],
+    tags=["MCP"],
+    summary="MCP JSON-RPC endpoint",
+    description="Implements MCP methods initialize, tools/list, and tools/call for reset and step tools.",
 )

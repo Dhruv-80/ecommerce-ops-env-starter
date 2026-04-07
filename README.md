@@ -1,3 +1,12 @@
+---
+title: ecommerce-ops-env
+emoji: 🛒
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+---
+
 # ecommerce-ops-env
 
 Deterministic OpenEnv-style e-commerce operations environment with 3 tasks:
