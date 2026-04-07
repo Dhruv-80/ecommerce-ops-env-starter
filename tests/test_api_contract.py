@@ -18,7 +18,7 @@ def test_health_endpoint_contract():
     response = client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"ok": True}
+    assert body == {"ok": True, "status": "healthy"}
 
 
 def test_tasks_endpoint_contract():
