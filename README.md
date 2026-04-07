@@ -50,3 +50,36 @@ Docker image runs on port `7860`:
 docker build -t ecommerce-ops-env .
 docker run --rm -p 7860:7860 ecommerce-ops-env
 ```
+
+## Start with Docker (recommended)
+1. Build image:
+```bash
+docker build -t ecommerce-ops-env .
+```
+
+2. Start container:
+```bash
+docker run --name ecommerce-ops-env --rm -p 7860:7860 ecommerce-ops-env
+```
+
+3. Verify server is up (new terminal):
+```bash
+curl http://localhost:7860/health
+curl http://localhost:7860/tasks
+```
+
+4. Stop container:
+- If running in foreground: press `Ctrl+C`.
+- If running detached, start with:
+```bash
+docker run -d --name ecommerce-ops-env -p 7860:7860 ecommerce-ops-env
+```
+Then stop with:
+```bash
+docker stop ecommerce-ops-env
+```
+
+Optional: view logs while running detached:
+```bash
+docker logs -f ecommerce-ops-env
+```
