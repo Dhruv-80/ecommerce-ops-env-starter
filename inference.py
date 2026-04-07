@@ -127,12 +127,11 @@ def _post_json(base_url: str, path: str, payload: Dict[str, Any]) -> Dict[str, A
     return response.json()
 
 
-def _model_client_from_env(hf_token: str) -> Optional[OpenAI]:
+def _model_client_from_env(*, llm_api_base_url: str, hf_token: str) -> Optional[OpenAI]:
     token = hf_token.strip()
     if not token or token.lower() in {"dummy", "none"}:
         return None
-    model_base_url = os.getenv("MODEL_BASE_URL", "https://router.huggingface.co/v1")
-    return OpenAI(base_url=model_base_url, api_key=token)
+    return OpenAI(base_url=llm_api_base_url, api_key=token)
 
 
 def _query_model(
@@ -221,28 +220,29 @@ def _choose_action(
 
 
 def main():
-    api_base_url = os.getenv("API_BASE_URL", "http://localhost:7860").rstrip("/")
+    llm_api_base_url = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1").rstrip("/")
     model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
     hf_token = os.getenv("HF_TOKEN", "dummy")
+    env_base_url = os.getenv("ENV_BASE_URL", "http://localhost:7860").rstrip("/")
     task_ids = ["task_1", "task_2", "task_3"]
 
-    llm_client = _model_client_from_env(hf_token)
+    llm_client = _model_client_from_env(llm_api_base_url=llm_api_base_url, hf_token=hf_token)
 
     for task_id in task_ids:
-        observation = _post_json(api_base_url, "/reset", {"task_id": task_id})
-        print("[START]", json.dumps({"task_id": task_id, "model": model_name}, sort_keys=True))
+        observation = _post_json(env_base_url, "/reset", {"task_id": task_id})
+        print("[START]", json.dumps({"task_id": task_id, "model": model_name}))
 
         total_reward = 0.0
         step_count = 0
         max_steps = int(observation.get("steps_remaining", 0))
         while not observation.get("done", False) and step_count < max_steps:
-            action, source = _choose_action(
+            action, _source = _choose_action(
                 llm_client=llm_client,
                 model_name=model_name,
                 task_id=task_id,
                 observation=observation,
             )
-            observation = _post_json(api_base_url, "/step", action)
+            observation = _post_json(env_base_url, "/step", action)
             step_count += 1
             reward = float(observation.get("reward", 0.0))
             total_reward += reward
@@ -250,29 +250,24 @@ def main():
                 "[STEP]",
                 json.dumps(
                     {
-                        "task_id": task_id,
                         "step": step_count,
-                        "source": source,
                         "action": action,
-                        "reward": round(reward, 4),
+                        "reward": round(reward, 2),
                         "done": bool(observation.get("done", False)),
-                    },
-                    sort_keys=True,
+                    }
                 ),
             )
 
-        grade = _post_json(api_base_url, "/grader", {})
+        grade = _post_json(env_base_url, "/grader", {})
         score = max(0.0, min(1.0, float(grade.get("score", 0.0))))
         print(
             "[END]",
             json.dumps(
                 {
                     "task_id": task_id,
-                    "total_reward": round(total_reward, 4),
+                    "total_reward": round(total_reward, 2),
                     "score": score,
-                    "breakdown": grade.get("breakdown", {}),
-                },
-                sort_keys=True,
+                }
             ),
         )
 

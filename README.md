@@ -41,7 +41,7 @@ curl -X POST http://localhost:7860/step -H "Content-Type: application/json" -d '
 ## Baseline runner
 Run all tasks sequentially with strict JSON action parsing:
 ```bash
-API_BASE_URL=http://localhost:7860 MODEL_NAME=gpt-4o-mini HF_TOKEN=dummy python inference.py
+API_BASE_URL=https://router.huggingface.co/v1 MODEL_NAME=gpt-4o-mini HF_TOKEN=your_token ENV_BASE_URL=http://localhost:7860 python inference.py
 ```
 
 ## Quick deployment note
