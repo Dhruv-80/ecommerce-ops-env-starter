@@ -49,4 +49,4 @@ def compute_step_reward(*, action: Dict[str, Any], outcome: Dict[str, Any], grou
         reward -= 0.10
         breakdown["penalties"] -= 0.10
 
-    return {"reward": reward, "breakdown": breakdown, "error": outcome.get("error")}
+    return {"reward": round(reward, 10), "breakdown": breakdown, "error": outcome.get("error")}

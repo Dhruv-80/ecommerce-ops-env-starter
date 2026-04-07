@@ -17,6 +17,11 @@ _PLACEHOLDER_ORDER_TIER = "standard"
 _PLACEHOLDER_ORDER_STATUS = "PENDING"
 
 
+def _build_order_record(o: Dict[str, Any]) -> OrderRecord:
+    items = [OrderItem(**i) if isinstance(i, dict) else i for i in o.get("items", [])]
+    return OrderRecord(**{**o, "items": items})
+
+
 class EcommerceEnvironment:
     def __init__(self):
         self._state: Optional[EcommerceState] = None
@@ -61,6 +66,7 @@ class EcommerceEnvironment:
             episode_id=str(uuid4()),
             task_id=task_id,
             max_steps=bundle["max_steps"],
+            orders=[_build_order_record(o) for o in init.get("orders", [])],
             orders=orders,
             inventory=[InventoryRecord(**i) for i in init.get("inventory", [])],
             tickets=tickets,
