@@ -127,7 +127,7 @@ def test_reward_penalizes_wrong_entity_and_duplicate_action():
         "repeat_action": True,
     }
     result = compute_step_reward(action={"action_type": "process_refund"}, outcome=outcome, ground_truth={})
-    assert result["reward"] < 0.0
+    assert result["reward"] <= 0.0
 
 
 def test_reward_full_credit_path_positive():

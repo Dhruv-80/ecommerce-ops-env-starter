@@ -50,7 +50,10 @@ def grade_task_2(state) -> Dict[str, Any]:
 
 def _is_substitution_applied(order, expected_substitute: str) -> bool:
     for item in getattr(order, "items", []):
-        substitute = getattr(item, "substitute_sku", None)
+        if isinstance(item, dict):
+            substitute = item.get("substitute_sku")
+        else:
+            substitute = getattr(item, "substitute_sku", None)
         if substitute == expected_substitute:
             return True
     return False
@@ -89,15 +92,21 @@ def grade_task_3(state) -> Dict[str, Any]:
     weighted_total = 0.0
     weighted_correct = 0.0
 
+    default_weight = tier_weights.get("standard", 1.0)
+
     per_order_scores: Dict[str, float] = {}
     for order_id, expected in gt_resolutions.items():
         order = orders_by_id.get(order_id)
+        weight = (
+            tier_weights.get(getattr(order, "customer_tier", "standard"), 1.0)
+            if order is not None
+            else default_weight
+        )
+        weighted_total += weight
         if order is None:
             per_order_scores[order_id] = 0.0
             continue
-        weight = tier_weights.get(getattr(order, "customer_tier", "standard"), 1.0)
         correctness = _order_resolution_match(order, expected)
-        weighted_total += weight
         weighted_correct += correctness * weight
         per_order_scores[order_id] = round(correctness, 4)
 

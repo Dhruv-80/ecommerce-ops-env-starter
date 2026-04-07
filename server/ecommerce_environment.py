@@ -31,7 +31,10 @@ class EcommerceEnvironment:
             episode_id=str(uuid4()),
             task_id=task_id,
             max_steps=bundle["max_steps"],
-            orders=[OrderRecord(**o) for o in init.get("orders", [])],
+            orders=[
+                OrderRecord(**{**o, "items": [OrderItem(**i) if isinstance(i, dict) else i for i in o.get("items", [])]})
+                for o in init.get("orders", [])
+            ],
             inventory=[InventoryRecord(**i) for i in init.get("inventory", [])],
             tickets=[TicketRecord(**t) for t in init.get("tickets", [])],
             ground_truth=bundle.get("ground_truth", {}),
