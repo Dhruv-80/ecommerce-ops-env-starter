@@ -13,6 +13,9 @@ except ImportError:
     from server.reward import compute_step_reward
     from server.grader import grade_episode
 
+_PLACEHOLDER_ORDER_TIER = "standard"
+_PLACEHOLDER_ORDER_STATUS = "PENDING"
+
 
 class EcommerceEnvironment:
     def __init__(self):
@@ -49,8 +52,8 @@ class EcommerceEnvironment:
                 orders.append(OrderRecord(
                     order_id=ticket.order_id,
                     customer_id=ticket.customer_id,
-                    customer_tier="standard",
-                    status="PENDING",
+                    customer_tier=_PLACEHOLDER_ORDER_TIER,
+                    status=_PLACEHOLDER_ORDER_STATUS,
                 ))
                 existing_order_ids.add(ticket.order_id)
 
