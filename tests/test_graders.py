@@ -223,7 +223,7 @@ def test_task_3_exact_weighted_score_without_collateral_damage():
     )
     result = grade_task_3(state)
     assert result["breakdown"]["weighted_resolution"] == pytest.approx(0.5889, abs=1e-4)
-    assert result["score"] == pytest.approx(0.5889, abs=1e-4)
+    assert result["score"] == pytest.approx(0.5888888888888889, abs=1e-4)
 
 
 def test_reward_contract_shape_stable():
