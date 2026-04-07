@@ -1,5 +1,8 @@
 name: Deploy to Hugging Face Space
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   push:
     branches:
@@ -22,7 +25,7 @@ jobs:
       relevant_changed_files: ${{ steps.detect.outputs.relevant_changed_files }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -166,7 +169,7 @@ jobs:
     if: needs.analyze.outputs.deploy_needed == 'true'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate required files
         shell: bash
