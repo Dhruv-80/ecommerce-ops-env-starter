@@ -110,7 +110,8 @@ def grader() -> Dict[str, Any]:
     except RuntimeError:
         env.reset(task_id="task_1")
         result = env.final_score()
-    score = max(0.0, min(1.0, float(result.get("score", 0.0))))
+    raw = float(result.get("score", 0.0))
+    score = max(0.01, min(0.99, raw))
     return {"score": score, "breakdown": result.get("breakdown", {})}
 
 
@@ -198,7 +199,7 @@ def _run_baseline_for_task(task_id: str) -> Dict[str, Any]:
         steps += 1
 
     grade = local_env.final_score()
-    score = max(0.0, min(1.0, float(grade.get("score", 0.0))))
+    score = max(0.01, min(0.99, float(grade.get("score", 0.0))))
     return {
         "score": score,
         "breakdown": grade.get("breakdown", {}),

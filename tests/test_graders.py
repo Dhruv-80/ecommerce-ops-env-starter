@@ -20,7 +20,7 @@ def test_task_1_full_credit_when_ticket_statuses_match_ground_truth():
         ],
     )
     result = grade_task_1(state)
-    assert result["score"] == 1.0
+    assert result["score"] == 0.99
 
 
 def test_task_1_partial_credit():
@@ -51,7 +51,7 @@ def test_task_2_full_credit_when_inventory_and_routes_match():
         ],
     )
     result = grade_task_2(state)
-    assert result["score"] == 1.0
+    assert result["score"] == 0.99
     assert result["breakdown"]["inventory_accuracy"] == 1.0
     assert result["breakdown"]["routing_accuracy"] == 1.0
 
@@ -168,7 +168,7 @@ def test_grade_episode_dispatches_for_task_1():
         tickets=[SimpleNamespace(ticket_id="T1", status="REFUNDED")],
     )
     result = grade_episode("task_1", state)
-    assert result["score"] == 1.0
+    assert result["score"] == 0.99
 
 
 def test_grade_episode_unknown_task_raises():

@@ -340,7 +340,7 @@ def main():
                 )
 
             grade = _post_json(env_base_url, "/grader", {})
-            score = max(0.0, min(1.0, float(grade.get("score", 0.0))))
+            score = max(0.01, min(0.99, float(grade.get("score", 0.0))))
             success = score > 0.0
 
         finally:

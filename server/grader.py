@@ -2,7 +2,13 @@ from typing import Any, Dict
 
 
 def _clamp01(x: float) -> float:
-    return max(0.0, min(1.0, x))
+    """Clamp to strictly within (0, 1) — never exactly 0.0 or 1.0."""
+    clamped = max(0.0, min(1.0, x))
+    if clamped <= 0.0:
+        return 0.01
+    if clamped >= 1.0:
+        return 0.99
+    return clamped
 
 
 def grade_task_1(state) -> Dict[str, Any]:

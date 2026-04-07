@@ -182,7 +182,7 @@ class EcommerceEnvironment:
     def final_score(self) -> Dict[str, Any]:
         graded = grade_episode(self.state.task_id, self.state)
         score = float(graded.get("score", 0.0))
-        score = max(0.0, min(1.0, score))
+        score = max(0.01, min(0.99, score))
         return {"score": score, "breakdown": graded.get("breakdown", {})}
 
     def _build_observation(
