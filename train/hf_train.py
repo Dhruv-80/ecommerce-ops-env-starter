@@ -97,19 +97,29 @@ if HF_TOKEN:
     login(token=HF_TOKEN)
 
 # ---------------------------------------------------------------------------
-# Clone the env repo into /tmp so imports work
+# Locate the env package — clone on HF Jobs, use local files otherwise
 # ---------------------------------------------------------------------------
 
-REPO_URL = os.environ.get(
-    "ENV_REPO_URL",
-    "https://github.com/YOUR_USERNAME/ecommerce-ops-env-starter.git",
-)
+REPO_URL = os.environ.get("ENV_REPO_URL", "")
 REPO_DIR = "/tmp/commerce-ops-env"
 
-if not os.path.exists(REPO_DIR):
-    os.system(f"git clone --depth 1 {REPO_URL} {REPO_DIR}")
+# Derive the project root relative to this script (train/hf_train.py → ../)
+_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
 
-sys.path.insert(0, REPO_DIR)
+if REPO_URL:
+    # HF Jobs path: clone or hard-reset to latest so fixes are always picked up
+    if not os.path.exists(REPO_DIR):
+        os.system(f"git clone --depth 1 {REPO_URL} {REPO_DIR}")
+    else:
+        os.system(
+            f"git -C {REPO_DIR} fetch --depth 1 origin main "
+            f"&& git -C {REPO_DIR} reset --hard origin/main"
+        )
+    sys.path.insert(0, REPO_DIR)
+else:
+    # Local / Colab path: use the project files already on disk (no clone needed)
+    sys.path.insert(0, _PROJECT_DIR)
 
 from environment import CommerceOpsEnv  # noqa: E402
 from tasks import get_task_bundle       # noqa: E402
