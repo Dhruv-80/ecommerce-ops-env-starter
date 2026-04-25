@@ -58,17 +58,19 @@ from huggingface_hub import HfApi, login, whoami
 
 HF_TOKEN        = os.environ.get("HF_TOKEN", "")
 FAST_DEV        = os.environ.get("FAST_DEV", "0") == "1"
-TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "50" if FAST_DEV else "200"))
+TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "80" if FAST_DEV else "200"))
 EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(8))
-TRAIN_SEEDS     = [0, 1, 2, 3] if FAST_DEV else [0, 1, 2, 3]
+TRAIN_SEEDS     = list(range(8)) if FAST_DEV else list(range(8))
 TRAIN_TASKS     = ["task_1", "task_2"] if FAST_DEV else ["task_1", "task_2"]
 MODEL_NAME      = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
 MAX_SEQ_LEN     = 2048
 LORA_R          = 16
 LORA_ALPHA      = 32
-LR              = 5e-6
-GRPO_N_SAMPLES  = 4
+LR              = 1e-5         # 2× from 5e-6 — KL was 0.012, way too low
+GRPO_N_SAMPLES  = 8            # 2× from 4 — give each group more chances at variance
 BATCH_SIZE      = 2
+GRPO_TEMP       = 1.2          # > 1.0 forces variance among the N samples per prompt
+GRPO_TOP_P      = 0.95
 
 # Hub targets — only call whoami when the env vars aren't already set
 HUB_MODEL_REPO   = os.environ.get("HUB_MODEL_REPO")
@@ -434,13 +436,25 @@ def main() -> None:
         max_prompt_length=1024,
         max_completion_length=256,
         logging_steps=10,
-        save_steps=TRAIN_STEPS,    # save once at end
+        save_steps=TRAIN_STEPS,
         warmup_steps=10,
         beta=0.01,
+        # Force diversity in the N samples per prompt — last run had
+        # frac_reward_zero_std=0.8, meaning groups had no variance to learn from.
+        temperature=GRPO_TEMP,
+        top_p=GRPO_TOP_P,
         report_to="none",
         seed=42,
     )
     model.train()
+
+    # Snapshot a LoRA A matrix before training so we can verify weights actually moved.
+    _lora_before = None
+    for name, p in model.named_parameters():
+        if "lora_A" in name and p.requires_grad:
+            _lora_before = (name, p.detach().clone())
+            break
+
     trainer = GRPOTrainer(
         model=model,
         args=training_args,
@@ -451,6 +465,14 @@ def main() -> None:
     print(f"\nStarting GRPO — {TRAIN_STEPS} steps …")
     train_result = trainer.train()
     print(f"Training done.  loss={round(train_result.training_loss, 4)}")
+
+    if _lora_before is not None:
+        name, before = _lora_before
+        after = dict(model.named_parameters())[name].detach()
+        delta = (after - before).norm().item()
+        rel   = delta / (before.norm().item() + 1e-9)
+        print(f"[SANITY] LoRA weight delta on {name}: ||Δ||={delta:.4e}  rel={rel:.4%}")
+        print(f"         (rel ≈ 0% → adapters didn't learn; > 0.1% → real movement)")
 
     # ── 6. Post-training eval ─────────────────────────────────────────
     FastLanguageModel.for_inference(model)
