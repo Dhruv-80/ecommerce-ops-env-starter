@@ -1,176 +1,241 @@
 @baseUrl = http://localhost:7860
 
-### Health
+###
+### ── Utility ──────────────────────────────────────────────────────────────
+###
+
+### Health check
 GET {{baseUrl}}/health
 
-### Tasks catalog
+### All available tasks
 GET {{baseUrl}}/tasks
 
-### Baseline run for all tasks
+### Action + observation JSON schema
+GET {{baseUrl}}/schema
+
+### Environment metadata
+GET {{baseUrl}}/metadata
+
+### Oracle baseline (perfect play on all tasks — takes ~5s)
 GET {{baseUrl}}/baseline
 
+
 ###
-### Task 1: Refund Queue Processing
+### ── Task 1: Single-Order Warehouse Assignment ────────────────────────────
+###
+### Goal: pick the BEST warehouse for one order.
+### Allowed actions: assign_warehouse, noop
 ###
 
-### Reset task_1
+### 1a. Reset Task 1 (seed 0)
 POST {{baseUrl}}/reset
 Content-Type: application/json
 
 {
-  "task_id": "task_1"
+  "task_id": "task_1",
+  "seed": 0
 }
 
-### Step task_1: inspect one order
+### 1b. Assign order O1 to warehouse W1 (likely the best choice — check score)
 POST {{baseUrl}}/step
 Content-Type: application/json
 
 {
-  "action_type": "inspect_order",
-  "order_id": "O1"
-}
-
-### Step task_1: approve refund within 30 days
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "process_refund",
-  "ticket_id": "T1",
+  "action_type": "assign_warehouse",
   "order_id": "O1",
-  "reason": "within_30_days"
+  "warehouse_id": "W1"
 }
 
-### Step task_1: reject refund outside 30 days
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "reject_refund",
-  "ticket_id": "T4",
-  "order_id": "O4",
-  "reason": "outside_30_days"
-}
-
-### State after some task_1 actions
+### 1c. Check state (stock levels update after assignment)
 GET {{baseUrl}}/state
 
-### Grade current episode
+### 1d. Grade the episode
 POST {{baseUrl}}/grader
 
-###
-### Task 2: Inventory Reconciliation
-###
 
-### Reset task_2
+### 1e. Reset Task 1 seed 1 (best warehouse may differ — test variability)
 POST {{baseUrl}}/reset
 Content-Type: application/json
 
 {
-  "task_id": "task_2"
+  "task_id": "task_1",
+  "seed": 1
 }
 
-### Step task_2: correct inventory update
+### 1f. Try the wrong warehouse — expect partial or zero score
 POST {{baseUrl}}/step
 Content-Type: application/json
 
 {
-  "action_type": "update_inventory",
-  "sku": "SKU-A",
-  "warehouse": "W1",
-  "quantity": 2
+  "action_type": "assign_warehouse",
+  "order_id": "O1",
+  "warehouse_id": "W2"
 }
 
-### Step task_2: intentionally wrong inventory update for penalty check
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "update_inventory",
-  "sku": "SKU-C",
-  "warehouse": "W1",
-  "quantity": 7
-}
-
-### Step task_2: route order
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "route_order",
-  "order_id": "O201",
-  "warehouse": "W1"
-}
-
-### State after task_2 actions
-GET {{baseUrl}}/state
-
-### Grade current episode
+### 1g. Grade after wrong warehouse
 POST {{baseUrl}}/grader
 
+
 ###
-### Task 3: Supplier Cancellation Crisis
+### ── Task 2: Multi-Order Fulfillment Triage ──────────────────────────────
+###
+### Goal: serve as many high-priority orders as possible given scarce stock.
+### Demand > supply — you MUST delay or split some orders.
+### Allowed actions: assign_warehouse, split_shipment, delay_order,
+###                  prioritize_order, noop
 ###
 
-### Reset task_3
+### 2a. Reset Task 2 (seed 0)
 POST {{baseUrl}}/reset
 Content-Type: application/json
 
 {
-  "task_id": "task_3"
+  "task_id": "task_2",
+  "seed": 0
 }
 
-### Step task_3: apply substitute to affected order
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "apply_substitute",
-  "order_id": "O301",
-  "sku": "SKU-X-SUB"
-}
-
-### Step task_3: send compensation
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "send_compensation",
-  "order_id": "O301",
-  "compensation_type": "coupon_5"
-}
-
-### Step task_3: cancel expected-cancel order
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "cancel_order",
-  "order_id": "O302",
-  "reason": "supplier_cancelled"
-}
-
-### Step task_3: intentional collateral damage case
-POST {{baseUrl}}/step
-Content-Type: application/json
-
-{
-  "action_type": "cancel_order",
-  "order_id": "O304",
-  "reason": "intentional_negative_test"
-}
-
-### State after task_3 actions
+### 2b. Check state — inspect stock levels vs order demand
 GET {{baseUrl}}/state
 
-### Grade current episode
+### 2c. Assign a high-priority (platinum/gold) order first
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "assign_warehouse",
+  "order_id": "O1",
+  "warehouse_id": "W1"
+}
+
+### 2d. Assign another high-priority order
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "assign_warehouse",
+  "order_id": "O2",
+  "warehouse_id": "W2"
+}
+
+### 2e. Split a medium-priority order across two warehouses
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "split_shipment",
+  "order_id": "O3",
+  "allocations": [
+    {"warehouse_id": "W1", "quantity": 1},
+    {"warehouse_id": "W2", "quantity": 1}
+  ]
+}
+
+### 2f. Delay a low-priority order (stock exhausted)
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "delay_order",
+  "order_id": "O6",
+  "reason": "Insufficient stock — lower priority customer deprioritised"
+}
+
+### 2g. State after triage decisions
+GET {{baseUrl}}/state
+
+### 2h. Grade the triage episode
 POST {{baseUrl}}/grader
 
+
+### 2i. Reset Task 2 seed 2 — different order mix
+POST {{baseUrl}}/reset
+Content-Type: application/json
+
+{
+  "task_id": "task_2",
+  "seed": 2
+}
+
+### 2j. Prioritize an order before assigning
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "prioritize_order",
+  "order_id": "O1",
+  "reason": "Platinum customer with express SLA"
+}
+
+### 2k. Assign after prioritizing
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "assign_warehouse",
+  "order_id": "O1",
+  "warehouse_id": "W1"
+}
+
+### 2l. Grade
+POST {{baseUrl}}/grader
+
+
 ###
-### Negative tests
+### ── Task 3: Cascade Recovery (stretch) ──────────────────────────────────
+###
+### Goal: recover from a supplier cancellation without collateral damage.
+### Allowed actions: escalate_supplier, refund_or_compensate, reroute_order,
+###                  delay_order, noop
 ###
 
-### Invalid action type
+### 3a. Reset Task 3 (seed 0)
+POST {{baseUrl}}/reset
+Content-Type: application/json
+
+{
+  "task_id": "task_3",
+  "seed": 0
+}
+
+### 3b. Escalate to supplier first
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "escalate_supplier",
+  "order_id": "O1",
+  "reason": "Supplier cancelled — requesting emergency restock"
+}
+
+### 3c. Reroute order to alternate warehouse
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "reroute_order",
+  "order_id": "O1",
+  "warehouse_id": "W2"
+}
+
+### 3d. Compensate customer for delay
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "refund_or_compensate",
+  "order_id": "O1",
+  "reason": "Supplier disruption — compensating with voucher"
+}
+
+### 3e. Grade task 3
+POST {{baseUrl}}/grader
+
+
+###
+### ── Negative / Edge Case Tests ───────────────────────────────────────────
+###
+
+### N1. Invalid action type — expect -0.5 reward
 POST {{baseUrl}}/step
 Content-Type: application/json
 
@@ -179,20 +244,78 @@ Content-Type: application/json
   "order_id": "O1"
 }
 
-### Missing required fields for route_order
+### N2. assign_warehouse missing warehouse_id — expect validation error
 POST {{baseUrl}}/step
 Content-Type: application/json
 
 {
-  "action_type": "route_order",
-  "order_id": "O201"
+  "action_type": "assign_warehouse",
+  "order_id": "O1"
 }
 
-### Non-existent entity
+### N3. split_shipment missing allocations — expect validation error
 POST {{baseUrl}}/step
 Content-Type: application/json
 
 {
-  "action_type": "inspect_order",
-  "order_id": "O9999"
+  "action_type": "split_shipment",
+  "order_id": "O1"
+}
+
+### N4. Action disallowed for current task (reroute_order not allowed in task_1)
+### First reset to task_1, then try reroute_order
+POST {{baseUrl}}/reset
+Content-Type: application/json
+
+{
+  "task_id": "task_1",
+  "seed": 0
+}
+
+### N4b. Now send a disallowed action — expect negative reward
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "reroute_order",
+  "order_id": "O1",
+  "warehouse_id": "W2"
+}
+
+### N5. Repeat the same action twice — expect is_repeat penalty in second step
+POST {{baseUrl}}/reset
+Content-Type: application/json
+
+{
+  "task_id": "task_2",
+  "seed": 0
+}
+
+### N5a. First delay (valid)
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "delay_order",
+  "order_id": "O6",
+  "reason": "Low priority"
+}
+
+### N5b. Repeat exact same delay — expect lower reward (is_repeat = true)
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "delay_order",
+  "order_id": "O6",
+  "reason": "Low priority"
+}
+
+### N6. Step after episode is done — should return done=true, reward=0
+### (Run after any graded complete episode)
+POST {{baseUrl}}/step
+Content-Type: application/json
+
+{
+  "action_type": "noop"
 }

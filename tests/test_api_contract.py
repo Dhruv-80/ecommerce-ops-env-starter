@@ -18,7 +18,8 @@ def test_health_endpoint_contract():
     response = client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"ok": True, "status": "healthy"}
+    assert body["ok"] is True
+    assert body["status"] == "healthy"
 
 
 def test_tasks_endpoint_contract():
@@ -36,11 +37,12 @@ def test_reset_step_state_grader_flow_contract():
     reset_body = reset_response.json()
     assert reset_body["task_id"] == "task_1"
     assert reset_body["done"] is False
-    assert "open_tickets" in reset_body
+    assert "orders" in reset_body
+    assert "warehouses" in reset_body
 
     step_response = client.post(
         "/step",
-        json={"action_type": "inspect_order", "order_id": "O1"},
+        json={"action_type": "assign_warehouse", "order_id": "O1", "warehouse_id": "W2"},
     )
     assert step_response.status_code == 200
     step_body = step_response.json()
@@ -53,7 +55,7 @@ def test_reset_step_state_grader_flow_contract():
     state_body = state_response.json()
     assert state_body["task_id"] == "task_1"
     assert "orders" in state_body
-    assert "tickets" in state_body
+    assert "stock" in state_body
 
     grader_response = client.post("/grader")
     assert grader_response.status_code == 200

@@ -1,3 +1,12 @@
+"""FastAPI / OpenEnv server for CommerceOps-Env.
+
+Exposes the standard OpenEnv endpoints (reset, step, state) plus helpers
+used for grading and demo (grader, baseline, tasks, metadata, schema).
+"""
+
+from __future__ import annotations
+
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -5,97 +14,112 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 try:
-    from ..models import EcommerceAction, EcommerceObservation
-    from .ecommerce_environment import EcommerceEnvironment
-    from .tasks import task_catalog
+    from ..environment import CommerceOpsEnv
+    from ..models import EnvAction, EnvObservation
+    from ..tasks import task_catalog
 except ImportError:
-    from models import EcommerceAction, EcommerceObservation
-    from server.ecommerce_environment import EcommerceEnvironment
-    from server.tasks import task_catalog
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from environment import CommerceOpsEnv
+    from models import EnvAction, EnvObservation
+    from tasks import task_catalog
 
 try:
-    from openenv.core.env_server import create_fastapi_app
+    from openenv.core.env_server import create_fastapi_app as _openenv_create
 except ImportError:
-    create_fastapi_app = None
+    _openenv_create = None
+
+
+# ---------------------------------------------------------------------------
+# Request/response models
+# ---------------------------------------------------------------------------
 
 
 class ResetRequest(BaseModel):
     task_id: str = "task_1"
+    seed: int = 0
 
 
 class StepRequest(BaseModel):
+    """Mirrors ``EnvAction`` but with ``extra='ignore'`` so extra HTTP fields
+    do not cause 422s on older clients."""
+
     model_config = ConfigDict(extra="ignore")
 
     action_type: str
     order_id: Optional[str] = None
-    ticket_id: Optional[str] = None
-    sku: Optional[str] = None
-    warehouse: Optional[str] = None
+    warehouse_id: Optional[str] = None
     quantity: Optional[int] = None
-    reason: Optional[str] = None
+    allocations: Optional[List[Dict[str, Any]]] = None
+    supplier_id: Optional[str] = None
     compensation_type: Optional[str] = None
+    reason: Optional[str] = None
 
-    def to_action(self) -> EcommerceAction:
-        return EcommerceAction(
-            action_type=self.action_type,
-            order_id=self.order_id,
-            ticket_id=self.ticket_id,
-            sku=self.sku,
-            warehouse=self.warehouse,
-            quantity=self.quantity,
-            reason=self.reason,
-            compensation_type=self.compensation_type,
-        )
+    def to_action_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
-env = EcommerceEnvironment()
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+
+env = CommerceOpsEnv()
 
 app = FastAPI(
-    title="Ecommerce Ops Environment API",
-    version="1.0.0",
+    title="CommerceOps-Env",
+    version="2.0.0",
     description=(
-        "Deterministic OpenEnv-style ecommerce operations environment with multi-step tasks for "
-        "refund processing, inventory reconciliation, and supplier-cancellation crisis handling."
+        "OpenEnv-compatible fulfillment-judgment RL environment. "
+        "An agent learns to make warehouse assignment and multi-order "
+        "triage decisions under inventory scarcity and SLA pressure."
     ),
-    contact={"name": "Ecommerce Ops Env Team"},
+    contact={"name": "CommerceOps-Env Team"},
 )
-if create_fastapi_app is not None:
+
+if _openenv_create is not None:
     try:
-        openenv_app = create_fastapi_app(
-            EcommerceEnvironment,
-            EcommerceAction,
-            EcommerceObservation,
-            env_name="ecommerce-ops-env",
+        _openenv_app = _openenv_create(
+            CommerceOpsEnv,
+            EnvAction,
+            EnvObservation,
+            env_name="commerce-ops-env",
             max_concurrent_envs=4,
         )
-        app.mount("/openenv", openenv_app)
+        app.mount("/openenv", _openenv_app)
     except Exception:
-        # Keep local fallback app operational even if OpenEnv wiring fails at import/runtime.
-        openenv_app = None
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Endpoint handlers
+# ---------------------------------------------------------------------------
 
 
 def health() -> Dict[str, Any]:
-    return {"ok": True, "status": "healthy"}
+    return {"ok": True, "status": "healthy", "version": "2.0.0"}
 
 
-def reset(req: Optional[ResetRequest] = None) -> EcommerceObservation:
-    task_id = req.task_id if req is not None else "task_1"
+def reset(req: Optional[ResetRequest] = None) -> Dict[str, Any]:
+    task_id = req.task_id if req else "task_1"
+    seed = req.seed if req else 0
     try:
-        return env.reset(task_id=task_id)
+        obs = env.reset(task_id=task_id, seed=seed)
+        return obs.model_dump()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def step(action: StepRequest) -> EcommerceObservation:
+def step(action: StepRequest) -> Dict[str, Any]:
     try:
-        return env.step(action.to_action())
+        obs = env.step(action.to_action_dict())
+        return obs.model_dump()
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def state() -> Dict[str, Any]:
     try:
-        return env.state.to_dict()
+        return env.state_dict()
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -108,123 +132,23 @@ def grader() -> Dict[str, Any]:
     try:
         result = env.final_score()
     except RuntimeError:
-        env.reset(task_id="task_1")
+        env.reset("task_1", seed=0)
         result = env.final_score()
-    raw = float(result.get("score", 0.0))
-    score = max(0.01, min(0.99, raw))
-    return {"score": score, "breakdown": result.get("breakdown", {})}
-
-
-def _first_open_ticket(local_env: EcommerceEnvironment):
-    return next((ticket for ticket in local_env.state.tickets if ticket.status == "OPEN"), None)
-
-
-def _first_order_needing_route(local_env: EcommerceEnvironment):
-    for order in local_env.state.orders:
-        if not order.warehouse or order.status in {"PENDING", "OPEN", "UNROUTED"}:
-            return order
-    return None
-
-
-def _best_warehouse(local_env: EcommerceEnvironment) -> str:
-    if not local_env.state.inventory:
-        return "W1"
-    # Deterministic tie-break: highest quantity, then warehouse name.
-    sorted_inventory = sorted(local_env.state.inventory, key=lambda row: (-row.quantity, row.warehouse))
-    return sorted_inventory[0].warehouse
-
-
-def _task_policy(local_env: EcommerceEnvironment) -> EcommerceAction:
-    task_id = local_env.state.task_id
-
-    if task_id == "task_1":
-        ticket = _first_open_ticket(local_env)
-        if ticket is not None:
-            action_type = "process_refund" if ticket.created_days_ago <= 30 else "reject_refund"
-            return EcommerceAction(
-                action_type=action_type,
-                ticket_id=ticket.ticket_id,
-                order_id=ticket.order_id,
-                reason=f"policy_{ticket.created_days_ago}_days",
-            )
-        if local_env.state.orders:
-            return EcommerceAction(action_type="inspect_order", order_id=local_env.state.orders[0].order_id)
-        return EcommerceAction(action_type="escalate_to_human", ticket_id="UNKNOWN", reason="no_open_tickets")
-
-    if task_id == "task_2":
-        order = _first_order_needing_route(local_env)
-        if order is not None:
-            return EcommerceAction(
-                action_type="route_order",
-                order_id=order.order_id,
-                warehouse=_best_warehouse(local_env),
-            )
-        if local_env.state.orders:
-            return EcommerceAction(action_type="inspect_order", order_id=local_env.state.orders[0].order_id)
-        return EcommerceAction(action_type="update_inventory", sku="SKU-DEFAULT", warehouse="W1", quantity=0)
-
-    if task_id == "task_3":
-        for order in local_env.state.orders:
-            if any(item.status in {"AFFECTED", "CANCELLED"} for item in order.items):
-                target_item = next((item for item in order.items if item.status in {"AFFECTED", "CANCELLED"}), order.items[0])
-                return EcommerceAction(action_type="apply_substitute", order_id=order.order_id, sku=f"SUB-{target_item.sku}")
-            if not order.compensation:
-                tier = order.customer_tier.lower()
-                comp = "coupon_10"
-                if tier == "premium":
-                    comp = "coupon_20"
-                elif tier == "loyalty":
-                    comp = "coupon_30"
-                return EcommerceAction(action_type="send_compensation", order_id=order.order_id, compensation_type=comp)
-        ticket = _first_open_ticket(local_env)
-        if ticket is not None:
-            return EcommerceAction(action_type="escalate_to_human", ticket_id=ticket.ticket_id, reason="complex_case")
-        if local_env.state.orders:
-            return EcommerceAction(action_type="inspect_order", order_id=local_env.state.orders[0].order_id)
-        return EcommerceAction(action_type="cancel_order", order_id="UNKNOWN", reason="fallback")
-
-    return EcommerceAction(action_type="inspect_order", order_id="UNKNOWN")
-
-
-def _run_baseline_for_task(task_id: str) -> Dict[str, Any]:
-    local_env = EcommerceEnvironment()
-    obs = local_env.reset(task_id=task_id)
-    total_reward = 0.0
-    steps = 0
-
-    while not obs.done and steps < local_env.state.max_steps:
-        action = _task_policy(local_env)
-        obs = local_env.step(action)
-        total_reward += obs.reward
-        steps += 1
-
-    grade = local_env.final_score()
-    score = max(0.01, min(0.99, float(grade.get("score", 0.0))))
-    return {
-        "score": score,
-        "breakdown": grade.get("breakdown", {}),
-        "steps": steps,
-        "total_reward": round(total_reward, 4),
-    }
-
-
-def baseline() -> Dict[str, Dict[str, Any]]:
-    return {
-        "task_1": _run_baseline_for_task("task_1"),
-        "task_2": _run_baseline_for_task("task_2"),
-        "task_3": _run_baseline_for_task("task_3"),
-    }
+    return result
 
 
 def metadata() -> Dict[str, Any]:
     return {
-        "name": "ecommerce-ops-env",
+        "name": "commerce-ops-env",
+        "version": "2.0.0",
         "description": (
-            "E-commerce operations environment where an AI agent resolves "
-            "refund queues, inventory discrepancies, and supplier cancellation crises."
+            "Fulfillment-judgment RL environment where an LLM agent "
+            "learns warehouse assignment and multi-order triage under "
+            "inventory scarcity, SLA pressure, and customer-tier conflicts."
         ),
-        "version": "0.1.0",
         "tasks": list(task_catalog().keys()),
+        "model_recommendation": "Qwen2.5-3B-Instruct",
+        "training_algorithm": "GRPO",
     }
 
 
@@ -232,46 +156,117 @@ def schema() -> Dict[str, Any]:
     return {
         "action": {
             "type": "object",
-            "properties": {
-                "action_type": {"type": "string"},
-                "order_id": {"type": "string"},
-                "ticket_id": {"type": "string"},
-                "sku": {"type": "string"},
-                "warehouse": {"type": "string"},
-                "quantity": {"type": "integer"},
-                "reason": {"type": "string"},
-                "compensation_type": {"type": "string"},
-            },
             "required": ["action_type"],
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "enum": [
+                        "assign_warehouse", "split_shipment", "delay_order",
+                        "prioritize_order", "reroute_order", "escalate_supplier",
+                        "refund_or_compensate", "noop",
+                    ],
+                },
+                "order_id":          {"type": "string"},
+                "warehouse_id":      {"type": "string"},
+                "quantity":          {"type": "integer", "minimum": 1},
+                "allocations":       {"type": "array",
+                                      "items": {"type": "object",
+                                                "properties": {
+                                                    "warehouse_id": {"type": "string"},
+                                                    "quantity": {"type": "integer"},
+                                                }}},
+                "supplier_id":       {"type": "string"},
+                "compensation_type": {"type": "string"},
+                "reason":            {"type": "string", "maxLength": 64},
+            },
         },
         "observation": {
             "type": "object",
             "properties": {
-                "done": {"type": "boolean"},
-                "reward": {"type": "number"},
-                "metadata": {"type": "object"},
-                "open_tickets": {"type": "array"},
-                "orders": {"type": "array"},
-                "inventory": {"type": "array"},
+                "task_id":            {"type": "string"},
+                "task_type":          {"type": "string"},
+                "episode_id":         {"type": "string"},
+                "step":               {"type": "integer"},
+                "max_steps":          {"type": "integer"},
+                "steps_remaining":    {"type": "integer"},
+                "done":               {"type": "boolean"},
+                "reward":             {"type": "number"},
+                "cumulative_reward":  {"type": "number"},
+                "orders":             {"type": "array"},
+                "warehouses":         {"type": "array"},
+                "stock":              {"type": "array"},
+                "allowed_actions":    {"type": "array"},
+                "policy_flags":       {"type": "object"},
                 "last_action_result": {"type": "string"},
-                "last_action_error": {"type": "string"},
-                "task_description": {"type": "string"},
-                "task_id": {"type": "string"},
-                "steps_remaining": {"type": "integer"},
-            },
-        },
-        "state": {
-            "type": "object",
-            "properties": {
-                "episode_id": {"type": "string"},
-                "task_id": {"type": "string"},
-                "step_count": {"type": "integer"},
-                "max_steps": {"type": "integer"},
-                "episode_done": {"type": "boolean"},
-                "cumulative_reward": {"type": "number"},
+                "last_action_error":  {"type": "string"},
+                "reward_breakdown":   {"type": "object"},
+                "task_description":   {"type": "string"},
             },
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Baseline runner — scripted oracle policy for demo and holdout checks
+# ---------------------------------------------------------------------------
+
+
+def _oracle_action_for_state(local_env: CommerceOpsEnv) -> Dict[str, Any]:
+    """Return the next oracle action by following the ground-truth plan."""
+    state = local_env.state
+    gt = state.ground_truth
+    plan = gt.get("plan", {})
+
+    for order in state.orders:
+        oid = order.order_id
+        if order.status != "pending":
+            continue
+        exp = plan.get(oid)
+        if exp is None:
+            continue
+        action = {"action_type": exp["action_type"], "order_id": oid}
+        if exp["action_type"] == "assign_warehouse":
+            action["warehouse_id"] = exp["warehouse_id"]
+        elif exp["action_type"] == "split_shipment":
+            action["allocations"] = exp["allocations"]
+        elif exp["action_type"] == "delay_order":
+            action["reason"] = "oracle_delay"
+        return action
+
+    # T1 fallback
+    gt_kind = gt.get("kind", "")
+    if gt_kind == "warehouse_assignment":
+        best = gt.get("best_warehouse")
+        oid = gt.get("order_id", "O1")
+        if best:
+            return {"action_type": "assign_warehouse", "order_id": oid, "warehouse_id": best}
+
+    return {"action_type": "noop"}
+
+
+def _run_oracle_for_task(task_id: str, seed: int = 0) -> Dict[str, Any]:
+    local_env = CommerceOpsEnv()
+    obs = local_env.reset(task_id=task_id, seed=seed)
+    steps = 0
+    while not obs.done and steps < local_env.state.max_steps:
+        action = _oracle_action_for_state(local_env)
+        obs = local_env.step(action)
+        steps += 1
+    result = local_env.final_score()
+    return {**result, "steps_taken": steps}
+
+
+def baseline() -> Dict[str, Any]:
+    return {
+        "task_1": _run_oracle_for_task("task_1"),
+        "task_2": _run_oracle_for_task("task_2"),
+        "task_3": _run_oracle_for_task("task_3"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP JSON-RPC handler (pass-through for tool integrations)
+# ---------------------------------------------------------------------------
 
 
 async def mcp_handler(request: Request) -> JSONResponse:
@@ -287,26 +282,19 @@ async def mcp_handler(request: Request) -> JSONResponse:
             "jsonrpc": "2.0", "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "ecommerce-ops-env", "version": "0.1.0"},
+                "serverInfo": {"name": "commerce-ops-env", "version": "2.0.0"},
                 "capabilities": {"tools": {}},
             },
         })
 
     if method == "tools/list":
         tools: List[Dict[str, Any]] = [
-            {
-                "name": "reset",
-                "description": "Reset the environment to a given task.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"task_id": {"type": "string", "default": "task_1"}},
-                },
-            },
-            {
-                "name": "step",
-                "description": "Take an action in the environment.",
-                "inputSchema": schema()["action"],
-            },
+            {"name": "reset", "description": "Reset to a task episode.",
+             "inputSchema": {"type": "object",
+                             "properties": {"task_id": {"type": "string"},
+                                            "seed": {"type": "integer"}}}},
+            {"name": "step", "description": "Submit one action.",
+             "inputSchema": schema()["action"]},
         ]
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}})
 
@@ -316,140 +304,49 @@ async def mcp_handler(request: Request) -> JSONResponse:
         args = params.get("arguments", {})
         try:
             if tool_name == "reset":
-                obs = env.reset(task_id=args.get("task_id", "task_1"))
-                return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": str(obs.to_dict())}]}})
+                obs = env.reset(task_id=args.get("task_id", "task_1"),
+                                seed=int(args.get("seed", 0)))
+                return JSONResponse({"jsonrpc": "2.0", "id": req_id,
+                                     "result": {"content": [{"type": "text",
+                                                              "text": obs.model_dump_json()}]}})
             if tool_name == "step":
-                action = EcommerceAction(
-                    action_type=args.get("action_type", ""),
-                    order_id=args.get("order_id"),
-                    ticket_id=args.get("ticket_id"),
-                    sku=args.get("sku"),
-                    warehouse=args.get("warehouse"),
-                    quantity=args.get("quantity"),
-                    reason=args.get("reason"),
-                    compensation_type=args.get("compensation_type"),
-                )
-                obs = env.step(action)
-                return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": str(obs.to_dict())}]}})
+                obs = env.step(args)
+                return JSONResponse({"jsonrpc": "2.0", "id": req_id,
+                                     "result": {"content": [{"type": "text",
+                                                              "text": obs.model_dump_json()}]}})
         except Exception as exc:
-            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(exc)}})
+            return JSONResponse({"jsonrpc": "2.0", "id": req_id,
+                                 "error": {"code": -32000, "message": str(exc)}})
 
-    return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {method}"}})
-
-
-app.add_api_route(
-    "/health",
-    health,
-    methods=["GET"],
-    tags=["System"],
-    summary="Health check",
-    description="Returns service liveness status.",
-    response_description="Liveness response.",
-)
-app.add_api_route(
-    "/reset",
-    reset,
-    methods=["POST"],
-    tags=["Episode"],
-    summary="Reset environment episode",
-    description="Starts a new deterministic episode for the selected task.",
-    response_description="Initial observation for the selected task.",
-    openapi_extra={
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "example": {"task_id": "task_1"},
-                }
-            }
-        }
-    },
-)
-app.add_api_route(
-    "/step",
-    step,
-    methods=["POST"],
-    tags=["Episode"],
-    summary="Apply one action",
-    description="Applies one environment action and returns the next observation with reward.",
-    response_description="Next observation after action execution.",
-    openapi_extra={
-        "requestBody": {
-            "content": {
-                "application/json": {
-                    "example": {
-                        "action_type": "inspect_order",
-                        "order_id": "O1",
-                    },
-                }
-            }
-        }
-    },
-)
-app.add_api_route(
-    "/state",
-    state,
-    methods=["GET"],
-    tags=["Episode"],
-    summary="Get internal state",
-    description="Returns full internal environment state for debugging and grading inspection.",
-    response_description="Current internal state.",
-)
-app.add_api_route(
-    "/tasks",
-    tasks,
-    methods=["GET"],
-    tags=["Catalog"],
-    summary="List available tasks",
-    description="Returns task metadata and difficulty information.",
-    response_description="Task catalog.",
-)
-app.add_api_route(
-    "/grader",
-    grader,
-    methods=["POST"],
-    tags=["Evaluation"],
-    summary="Grade current episode",
-    description="Computes a normalized score and breakdown for the current episode state.",
-    response_description="Episode score and breakdown.",
-)
-app.add_api_route(
-    "/baseline",
-    baseline,
-    methods=["GET"],
-    tags=["Evaluation"],
-    summary="Run baseline policy",
-    description="Runs deterministic baseline policy on all tasks and returns task-level scores.",
-    response_description="Baseline results across task_1, task_2, and task_3.",
-)
-app.add_api_route(
-    "/metadata",
-    metadata,
-    methods=["GET"],
-    tags=["System"],
-    summary="Environment metadata",
-    description="Returns environment metadata used by integration layers.",
-)
-app.add_api_route(
-    "/schema",
-    schema,
-    methods=["GET"],
-    tags=["System"],
-    summary="Action/observation/state schema",
-    description="Returns high-level JSON schema for action, observation, and state payloads.",
-)
-app.add_api_route(
-    "/mcp",
-    mcp_handler,
-    methods=["POST"],
-    tags=["MCP"],
-    summary="MCP JSON-RPC endpoint",
-    description="Implements MCP methods initialize, tools/list, and tools/call for reset and step tools.",
-)
+    return JSONResponse({"jsonrpc": "2.0", "id": req_id,
+                         "error": {"code": -32601, "message": f"Method not found: {method}"}})
 
 
-def main():
+# ---------------------------------------------------------------------------
+# Route registration
+# ---------------------------------------------------------------------------
+
+
+_ROUTES = [
+    ("/health",   health,   ["GET"],  "System",      "Health check"),
+    ("/reset",    reset,    ["POST"], "Episode",     "Reset environment episode"),
+    ("/step",     step,     ["POST"], "Episode",     "Apply one action"),
+    ("/state",    state,    ["GET"],  "Episode",     "Get internal state"),
+    ("/tasks",    tasks,    ["GET"],  "Catalog",     "List available tasks"),
+    ("/grader",   grader,   ["POST"], "Evaluation",  "Grade current episode"),
+    ("/baseline", baseline, ["GET"],  "Evaluation",  "Run oracle baseline on all tasks"),
+    ("/metadata", metadata, ["GET"],  "System",      "Environment metadata"),
+    ("/schema",   schema,   ["GET"],  "System",      "Action/observation schema"),
+    ("/mcp",      mcp_handler, ["POST"], "MCP",      "MCP JSON-RPC endpoint"),
+]
+
+for _path, _fn, _methods, _tag, _summary in _ROUTES:
+    app.add_api_route(_path, _fn, methods=_methods, tags=[_tag], summary=_summary)
+
+
+def main() -> None:
     import uvicorn
-    uvicorn.run("server.app:app", host="0.0.0.0", port=7860)
+    uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=False)
 
 
 if __name__ == "__main__":
