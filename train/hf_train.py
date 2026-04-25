@@ -174,7 +174,7 @@ def _extract_action(text: str) -> Dict[str, Any]:
     return {"action_type": "noop"}
 
 
-def _run_episode(model, tokenizer, task_id: str, seed: int) -> Dict[str, Any]:
+def _run_episode(model, tokenizer, task_id: str, seed: int, debug: bool = False) -> Dict[str, Any]:
     env = CommerceOpsEnv()
     obs = env.reset(task_id=task_id, seed=seed)
     total_r = 0.0
@@ -194,7 +194,18 @@ def _run_episode(model, tokenizer, task_id: str, seed: int) -> Dict[str, Any]:
             )
         raw = tokenizer.decode(out[0][ids.shape[-1]:], skip_special_tokens=True)
         action = _extract_action(raw)
+        
+        # Debug: show what the model generated and how it was parsed
+        if debug and steps == 0:
+            print(f"\n[DEBUG {task_id} seed={seed}]")
+            print(f"  raw output (first 300 chars): {raw[:300]!r}")
+            print(f"  parsed action: {action}")
+        
         obs = env.step(action)
+        
+        if debug and steps == 0:
+            print(f"  env response: reward={obs.reward}, error={obs.last_action_error}")
+        
         total_r += obs.reward
         steps += 1
     result = env.final_score()
@@ -211,9 +222,12 @@ def _run_episode(model, tokenizer, task_id: str, seed: int) -> Dict[str, Any]:
 def _evaluate(model, tokenizer, label: str) -> Dict[str, Any]:
     print(f"\n--- Evaluating [{label}] ---")
     records = []
+    first_episode = True
     for task_id in ["task_1", "task_2"]:
         for seed in EVAL_SEEDS:
-            r = _run_episode(model, tokenizer, task_id=task_id, seed=seed)
+            # Debug first episode only to see what the model is generating
+            r = _run_episode(model, tokenizer, task_id=task_id, seed=seed, debug=first_episode)
+            first_episode = False
             records.append(r)
             print(f"  {label}  {task_id} seed={seed}  score={r['score']:.3f}  "
                   f"reward={r['total_reward']:+.3f}  invalid={r['invalid_actions']}")
