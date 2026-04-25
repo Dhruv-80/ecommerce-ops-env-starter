@@ -119,15 +119,18 @@ def generate(model, tokenizer, system_prompt: str, user_msg: str) -> str:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
     ]
-    inputs = tokenizer.apply_chat_template(
-        msgs, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-    ).to(model.device)
+    enc = tokenizer.apply_chat_template(
+        msgs, tokenize=True, add_generation_prompt=True, return_tensors="pt",
+        return_dict=True,
+    )
+    enc = {k: v.to(model.device) for k, v in enc.items()}
+    input_len = enc["input_ids"].shape[-1]
     with torch.no_grad():
         out = model.generate(
-            inputs, max_new_tokens=200, do_sample=False,
+            **enc, max_new_tokens=200, do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
-    return tokenizer.decode(out[0][inputs.shape[-1]:], skip_special_tokens=True)
+    return tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
 
 
 def test_prompt(model, tokenizer, name: str, system_prompt: str):
