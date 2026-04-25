@@ -56,7 +56,11 @@ from huggingface_hub import HfApi, login, whoami
 # Config from env vars
 # ---------------------------------------------------------------------------
 
-HF_TOKEN        = os.environ.get("HF_TOKEN", "")
+HF_TOKEN        = (
+    os.environ.get("HF_TOKEN_PUSH", "")
+    or os.environ.get("HUGGING_FACE_HUB_TOKEN", "")
+    or os.environ.get("HF_TOKEN", "")
+)
 FAST_DEV        = os.environ.get("FAST_DEV", "0") == "1"
 TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "80" if FAST_DEV else "200"))
 EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(8))
@@ -91,6 +95,11 @@ print(f"  steps      : {TRAIN_STEPS}  fast_dev: {FAST_DEV}")
 print(f"  hub_model  : {HUB_MODEL_REPO}")
 print(f"  hub_results: {HUB_RESULTS_REPO}")
 print(f"  device     : {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu'}")
+print(f"  token      : {'SET (len=' + str(len(HF_TOKEN)) + ')' if HF_TOKEN else 'EMPTY ❌ — Hub push will be skipped'}")
+print(f"  token_src  : "
+      f"HF_TOKEN_PUSH={'y' if os.environ.get('HF_TOKEN_PUSH') else 'n'} "
+      f"HUGGING_FACE_HUB_TOKEN={'y' if os.environ.get('HUGGING_FACE_HUB_TOKEN') else 'n'} "
+      f"HF_TOKEN={'y' if os.environ.get('HF_TOKEN') else 'n'}")
 print(f"{'='*62}\n")
 
 if HF_TOKEN:
