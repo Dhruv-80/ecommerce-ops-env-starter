@@ -49,8 +49,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import math
-
 import torch
 from huggingface_hub import HfApi, login, whoami
 
@@ -136,15 +134,23 @@ print(f"[CHECKPOINT] FAST_DEV={FAST_DEV}, TRAIN_STEPS={TRAIN_STEPS}, TRAIN_TASKS
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are a fulfillment operations manager for an e-commerce platform.
-Respond with a single JSON action object and nothing else.
+You are a fulfillment operations manager. Output ONLY a JSON action — no prose, no markdown.
 
-Action schema:
-  {"action_type": "<type>", ...fields}
+Examples of valid outputs:
 
-Allowed types: assign_warehouse, split_shipment, delay_order,
-               prioritize_order, reroute_order, escalate_supplier,
-               refund_or_compensate, noop
+Example 1 — Assign an order to a warehouse:
+{"action_type": "assign_warehouse", "order_id": "O1", "warehouse_id": "W1"}
+
+Example 2 — Split an order across two warehouses:
+{"action_type": "split_shipment", "order_id": "O1", "allocations": [{"warehouse_id": "W1", "quantity": 5}, {"warehouse_id": "W2", "quantity": 3}]}
+
+Example 3 — Delay an order:
+{"action_type": "delay_order", "order_id": "O1", "reason": "stock_unavailable"}
+
+Example 4 — Do nothing this step:
+{"action_type": "noop"}
+
+Output a single JSON object on one line. No code fences. No reasoning text.
 """
 
 def _obs_to_text(obs) -> str:
@@ -207,15 +213,18 @@ def _run_episode(model, tokenizer, task_id: str, seed: int, debug: bool = False)
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user",   "content": _obs_to_text(obs)},
         ]
-        ids = tokenizer.apply_chat_template(
-            msgs, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-        ).to(model.device)
+        enc = tokenizer.apply_chat_template(
+            msgs, tokenize=True, add_generation_prompt=True, return_tensors="pt",
+            return_dict=True,
+        )
+        enc = {k: v.to(model.device) for k, v in enc.items()}
+        input_len = enc["input_ids"].shape[-1]
         with torch.no_grad():
             out = model.generate(
-                ids, max_new_tokens=256, do_sample=False,
+                **enc, max_new_tokens=256, do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
-        raw = tokenizer.decode(out[0][ids.shape[-1]:], skip_special_tokens=True)
+        raw = tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
         action = _extract_action(raw)
         
         # Debug: show what the model generated and how it was parsed
@@ -282,33 +291,23 @@ def grpo_reward_fn(
     completions: List[str],
     **kwargs,
 ) -> List[float]:
+    """Single-step reward: env.reset() then env.step(model_action), use that reward.
+
+    Diagnostic confirmed this signal works: V2 prompt yields +0.95 on task_1 baseline,
+    -0.35 on invalid actions. Plenty of variance for GRPO group advantages.
+    """
     task_ids = kwargs.get("task_id", ["task_1"] * len(completions))
     seeds    = kwargs.get("seed",    [0]        * len(completions))
     rewards  = []
     for completion, task_id, seed in zip(completions, task_ids, seeds):
-        first_action = _extract_action(completion)
+        action = _extract_action(completion)
         try:
             env = CommerceOpsEnv()
-            obs = env.reset(task_id=task_id, seed=int(seed))
-
-            # Play the full episode: use the model's completion for step 1,
-            # then take noop actions for the remaining steps so the episode
-            # terminates and we get a real final_score — matching eval signal.
-            total_r = 0.0
-            step = 0
-            while not obs.done:
-                action = first_action if step == 0 else {"action_type": "noop"}
-                obs = env.step(action)
-                total_r += obs.reward
-                step += 1
-
-            result = env.final_score()
-            # final_score in [0,1], normalise total_r with sigmoid then blend
-            score = result["score"]                          # [0, 1]
-            norm_r = 1.0 / (1.0 + math.exp(-total_r))      # (0, 1)
-            rewards.append(0.5 * score + 0.5 * norm_r)
+            env.reset(task_id=task_id, seed=int(seed))
+            obs = env.step(action)
+            rewards.append(float(obs.reward))
         except Exception:
-            rewards.append(0.0)
+            rewards.append(-0.5)
     return rewards
 
 
