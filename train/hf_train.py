@@ -62,11 +62,11 @@ HF_TOKEN        = (
     or os.environ.get("HF_TOKEN", "")
 )
 FAST_DEV        = os.environ.get("FAST_DEV", "0") == "1"
-TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "80" if FAST_DEV else "200"))
+TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "80" if FAST_DEV else "800"))
 EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(8))
 TRAIN_SEEDS     = list(range(8)) if FAST_DEV else list(range(8))
-TRAIN_TASKS     = ["task_1", "task_2"] if FAST_DEV else ["task_1", "task_2"]
-MODEL_NAME      = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
+TRAIN_TASKS     = ["task_2"] if FAST_DEV else ["task_2"]
+MODEL_NAME      = os.environ.get("MODEL_NAME", "TenduL/commerce-ops-grpo")
 MAX_SEQ_LEN     = 2048
 LORA_R          = 16
 LORA_ALPHA      = 32
