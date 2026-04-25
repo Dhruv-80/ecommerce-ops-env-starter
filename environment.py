@@ -369,6 +369,13 @@ class CommerceOpsEnv:
     # Validation
     # ------------------------------------------------------------------
 
+    # Fields that EnvAction accepts; anything else is model verbosity and
+    # should be stripped rather than causing an extra="forbid" rejection.
+    _KNOWN_ACTION_FIELDS: frozenset = frozenset({
+        "action_type", "order_id", "warehouse_id", "quantity",
+        "allocations", "supplier_id", "compensation_type", "reason",
+    })
+
     def _validate_action(
         self, raw: Dict[str, Any], task_type: str
     ) -> tuple[Optional[EnvAction], Optional[str]]:
@@ -379,8 +386,12 @@ class CommerceOpsEnv:
         if action_type not in allowed:
             return None, f"action_type '{action_type}' not allowed for {task_type}"
 
+        # Strip unknown fields so model verbosity (e.g. "reasoning", "notes")
+        # doesn't trigger the extra="forbid" rejection on EnvAction.
+        filtered = {k: v for k, v in raw.items() if k in self._KNOWN_ACTION_FIELDS}
+
         try:
-            return EnvAction(**raw), None
+            return EnvAction(**filtered), None
         except (ValidationError, TypeError) as exc:
             return None, str(exc)
 

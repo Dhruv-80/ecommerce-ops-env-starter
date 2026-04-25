@@ -49,6 +49,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import math
+
 import torch
 from huggingface_hub import HfApi, login, whoami
 
@@ -58,10 +60,10 @@ from huggingface_hub import HfApi, login, whoami
 
 HF_TOKEN        = os.environ.get("HF_TOKEN", "")
 FAST_DEV        = os.environ.get("FAST_DEV", "0") == "1"
-TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "5" if FAST_DEV else "200"))
+TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "50" if FAST_DEV else "200"))
 EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(8))
-TRAIN_SEEDS     = [0, 1] if FAST_DEV else [0, 1, 2, 3]
-TRAIN_TASKS     = ["task_1"] if FAST_DEV else ["task_1", "task_2"]
+TRAIN_SEEDS     = [0, 1, 2, 3] if FAST_DEV else [0, 1, 2, 3]
+TRAIN_TASKS     = ["task_1", "task_2"] if FAST_DEV else ["task_1", "task_2"]
 MODEL_NAME      = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
 MAX_SEQ_LEN     = 2048
 LORA_R          = 16
@@ -70,14 +72,17 @@ LR              = 5e-6
 GRPO_N_SAMPLES  = 4
 BATCH_SIZE      = 2
 
-# Hub targets
-try:
-    _me = whoami(token=HF_TOKEN)["name"]
-except Exception:
-    _me = "user"
+# Hub targets — only call whoami when the env vars aren't already set
+HUB_MODEL_REPO   = os.environ.get("HUB_MODEL_REPO")
+HUB_RESULTS_REPO = os.environ.get("HUB_RESULTS_REPO")
 
-HUB_MODEL_REPO   = os.environ.get("HUB_MODEL_REPO",   f"{_me}/commerce-ops-grpo")
-HUB_RESULTS_REPO = os.environ.get("HUB_RESULTS_REPO", f"{_me}/commerce-ops-results")
+if not HUB_MODEL_REPO or not HUB_RESULTS_REPO:
+    try:
+        _me = whoami(token=HF_TOKEN, cache=True)["name"]
+    except Exception:
+        _me = "user"
+    HUB_MODEL_REPO   = HUB_MODEL_REPO   or f"{_me}/commerce-ops-grpo"
+    HUB_RESULTS_REPO = HUB_RESULTS_REPO or f"{_me}/commerce-ops-results"
 
 print(f"{'='*62}")
 print(f"  CommerceOps-Env GRPO Training")
@@ -234,14 +239,29 @@ def grpo_reward_fn(
     seeds    = kwargs.get("seed",    [0]        * len(completions))
     rewards  = []
     for completion, task_id, seed in zip(completions, task_ids, seeds):
-        action = _extract_action(completion)
+        first_action = _extract_action(completion)
         try:
             env = CommerceOpsEnv()
-            env.reset(task_id=task_id, seed=int(seed))
-            obs = env.step(action)
-            rewards.append(float(obs.reward) + env.final_score()["score"] * 0.5)
+            obs = env.reset(task_id=task_id, seed=int(seed))
+
+            # Play the full episode: use the model's completion for step 1,
+            # then take noop actions for the remaining steps so the episode
+            # terminates and we get a real final_score — matching eval signal.
+            total_r = 0.0
+            step = 0
+            while not obs.done:
+                action = first_action if step == 0 else {"action_type": "noop"}
+                obs = env.step(action)
+                total_r += obs.reward
+                step += 1
+
+            result = env.final_score()
+            # final_score in [0,1], normalise total_r with sigmoid then blend
+            score = result["score"]                          # [0, 1]
+            norm_r = 1.0 / (1.0 + math.exp(-total_r))      # (0, 1)
+            rewards.append(0.5 * score + 0.5 * norm_r)
         except Exception:
-            rewards.append(-0.5)
+            rewards.append(0.0)
     return rewards
 
 
@@ -335,6 +355,11 @@ def main() -> None:
     FastLanguageModel.for_inference(model)
     baseline_result = _evaluate(model, tokenizer, label="baseline")
 
+    # Reset inference flag on the base model before PEFT wrapping;
+    # for_training on a PeftModelForCausalLM fails because the flag lives
+    # on the inner base model, not the wrapper.
+    FastLanguageModel.for_training(model)
+
     # ── 3. LoRA adapters ──────────────────────────────────────────────
     model = FastLanguageModel.get_peft_model(
         model,
@@ -365,11 +390,11 @@ def main() -> None:
         logging_steps=10,
         save_steps=TRAIN_STEPS,    # save once at end
         warmup_steps=10,
-        kl_coef=0.01,
+        beta=0.01,
         report_to="none",
         seed=42,
     )
-    FastLanguageModel.for_training(model)
+    model.train()
     trainer = GRPOTrainer(
         model=model,
         args=training_args,
