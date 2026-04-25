@@ -124,6 +124,13 @@ else:
 from environment import CommerceOpsEnv  # noqa: E402
 from tasks import get_task_bundle       # noqa: E402
 
+# ═══════════════════════════════════════════════════════════════════════════
+# CHECKPOINT 1: Verify imports came from the right place
+# ═══════════════════════════════════════════════════════════════════════════
+import environment as _env_module
+print(f"[CHECKPOINT] environment.py loaded from: {_env_module.__file__}")
+print(f"[CHECKPOINT] FAST_DEV={FAST_DEV}, TRAIN_STEPS={TRAIN_STEPS}, TRAIN_TASKS={TRAIN_TASKS}")
+
 # ---------------------------------------------------------------------------
 # Prompt / action utilities (inline — no circular import from notebooks)
 # ---------------------------------------------------------------------------
@@ -139,9 +146,6 @@ Allowed types: assign_warehouse, split_shipment, delay_order,
                prioritize_order, reroute_order, escalate_supplier,
                refund_or_compensate, noop
 """
-
-_JSON_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
-
 
 def _obs_to_text(obs) -> str:
     snap = {
@@ -160,17 +164,36 @@ def _obs_to_text(obs) -> str:
 
 
 def _extract_action(text: str) -> Dict[str, Any]:
-    text = re.sub(r"^```(?:json)?\n?", "", text.strip())
-    text = re.sub(r"\n?```$", "", text)
+    """Extract JSON action from model output, handling nested braces and wrappers."""
+    text = text.strip()
+    
+    # Strip markdown code fences anywhere in the text
+    text = re.sub(r"```(?:json)?", "", text)
+    text = text.strip()
+    
+    # Try 1: Direct parse (ideal case - model outputs pure JSON)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        m = _JSON_RE.search(text)
-        if m:
-            try:
-                return json.loads(m.group())
-            except json.JSONDecodeError:
-                pass
+        pass
+    
+    # Try 2: Find the OUTERMOST balanced braces (handles nested JSON)
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        for i, c in enumerate(text[start:], start):
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i+1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+    
+    # Fallback: return noop (valid for all task types)
     return {"action_type": "noop"}
 
 
