@@ -1,13 +1,18 @@
 spec_version: 1
-name: ecommerce-ops-env
+name: commerce-ops-env
 type: text
 runtime: docker
 app: server.app:app
 port: 7860
 description: >
-  E-commerce operations environment where an AI agent resolves refund queues,
-  inventory discrepancies, and supplier cancellation crises.
+  CommerceOps-Env: an OpenEnv-compatible RL environment where an LLM agent
+  learns to make human-like fulfillment decisions under inventory scarcity,
+  SLA pressure, and competing customer priorities.
+  Three tasks — T1 warehouse assignment (bootstrap), T2 multi-order triage
+  (headline), T3 cascade recovery (stretch).
 tags:
   - openenv
   - ecommerce
-  - operations
+  - fulfillment
+  - rl-environment
+  - grpo
