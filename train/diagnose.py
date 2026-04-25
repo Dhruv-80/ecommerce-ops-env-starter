@@ -4,6 +4,8 @@
 #   "torch",
 #   "accelerate",
 #   "huggingface-hub",
+#   "pydantic>=2.8.0",
+#   "fastapi>=0.115.0",
 # ]
 # ///
 """Diagnostic-only HF Job: load Qwen2.5-3B, see what it outputs.
