@@ -297,26 +297,81 @@ def _evaluate(model, tokenizer, label: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# Module-level handles to the trainable model + tokenizer. Set in main()
+# right before GRPO so the reward fn can reach them for the rollout. We use
+# globals because TRL's reward_funcs signature is fixed (prompts, completions,
+# **kwargs) — there's nowhere clean to thread the model through.
+_GLOBAL_MODEL = None
+_GLOBAL_TOKENIZER = None
+
+
+@torch.no_grad()
+def _greedy_action(model, tokenizer, obs) -> Dict[str, Any]:
+    """One greedy rollout step. No grad, no sampling — just the model's
+    best guess at the next action given the current observation.
+    """
+    msgs = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user",   "content": _obs_to_text(obs)},
+    ]
+    enc = tokenizer.apply_chat_template(
+        msgs, tokenize=True, add_generation_prompt=True,
+        return_tensors="pt", return_dict=True,
+    )
+    enc = {k: v.to(model.device) for k, v in enc.items()}
+    input_len = enc["input_ids"].shape[-1]
+    out = model.generate(
+        **enc, max_new_tokens=128, do_sample=False,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+    raw = tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
+    return _extract_action(raw)
+
+
 def grpo_reward_fn(
     prompts: List[str],
     completions: List[str],
     **kwargs,
 ) -> List[float]:
-    """Single-step reward: env.reset() then env.step(model_action), use that reward.
+    """Multi-step rollout reward.
 
-    Diagnostic confirmed this signal works: V2 prompt yields +0.95 on task_1 baseline,
-    -0.35 on invalid actions. Plenty of variance for GRPO group advantages.
+    For each (prompt, completion) pair the trainer hands us:
+      1. Reset the env to (task_id, seed).
+      2. Apply the model's *first* action (the trainable completion).
+      3. Greedily roll out the remainder of the episode with the SAME
+         model (no_grad, do_sample=False) until done or max_steps.
+      4. Return the final episode score (0..1) as the reward.
+
+    Why: single-step reward only credits the immediate move, so on a
+    multi-order task like task_2 the model converges to a per-order
+    optimum that doesn't compose into a good full-episode score. Scoring
+    on the rollout's final score gives proper credit assignment — the
+    advantage now reflects "how good is this first move *given that I'll
+    continue acting with my current policy?*"
     """
     task_ids = kwargs.get("task_id", ["task_1"] * len(completions))
     seeds    = kwargs.get("seed",    [0]        * len(completions))
-    rewards  = []
+    model     = _GLOBAL_MODEL
+    tokenizer = _GLOBAL_TOKENIZER
+
+    rewards: List[float] = []
     for completion, task_id, seed in zip(completions, task_ids, seeds):
-        action = _extract_action(completion)
+        first_action = _extract_action(completion)
         try:
             env = CommerceOpsEnv()
             env.reset(task_id=task_id, seed=int(seed))
-            obs = env.step(action)
-            rewards.append(float(obs.reward))
+            obs = env.step(first_action)
+            steps = 1
+            # Roll out the rest with the current model. If model+tokenizer
+            # aren't wired (e.g. unit-test path), fall back to single-step
+            # reward and skip the rollout — keeps the function robust.
+            if model is not None and tokenizer is not None:
+                while not obs.done and steps < env.state.max_steps:
+                    next_action = _greedy_action(model, tokenizer, obs)
+                    obs = env.step(next_action)
+                    steps += 1
+            final = env.final_score()
+            rewards.append(float(final.get("score", 0.0)))
         except Exception:
             rewards.append(-0.5)
     return rewards
@@ -464,6 +519,12 @@ def main() -> None:
             _lora_before = (name, p.detach().clone())
             break
 
+    # Wire the LoRA-wrapped model + tokenizer into the reward fn's globals
+    # so it can run the per-rollout greedy generation in the inner loop.
+    global _GLOBAL_MODEL, _GLOBAL_TOKENIZER
+    _GLOBAL_MODEL = model
+    _GLOBAL_TOKENIZER = tokenizer
+
     trainer = GRPOTrainer(
         model=model,
         args=training_args,
@@ -471,7 +532,7 @@ def main() -> None:
         reward_funcs=grpo_reward_fn,
         processing_class=tokenizer,
     )
-    print(f"\nStarting GRPO — {TRAIN_STEPS} steps …")
+    print(f"\nStarting GRPO (multi-step rollout reward) — {TRAIN_STEPS} steps …")
     train_result = trainer.train()
     print(f"Training done.  loss={round(train_result.training_loss, 4)}")
 
