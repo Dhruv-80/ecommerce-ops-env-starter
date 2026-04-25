@@ -10,4 +10,4 @@ dist/
 build/
 
 
-.cursor/
+.cursor/_bundled_job.py
