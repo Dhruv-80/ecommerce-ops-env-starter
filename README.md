@@ -184,6 +184,6 @@ docker build -t commerce-ops-env .
 docker run --rm -p 7860:7860 commerce-ops-env
 ```
 
-Live Space: https://huggingface.co/spaces/Gloomytarsier3/my-env  
-API base: https://gloomytarsier3-my-env.hf.space  
-Swagger: https://gloomytarsier3-my-env.hf.space/docs
+Live Space: https://huggingface.co/spaces/Gloomytarsier3/e-com-r2  
+API base: https://gloomytarsier3-e-com-r2.hf.space  
+Swagger: https://gloomytarsier3-e-com-r2.hf.space/docs
