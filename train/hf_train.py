@@ -365,7 +365,7 @@ def main() -> None:
         logging_steps=10,
         save_steps=TRAIN_STEPS,    # save once at end
         warmup_steps=10,
-        kl_coef=0.01,
+        beta=0.01,
         report_to="none",
         seed=42,
     )
