@@ -1,9 +1,8 @@
 """CommerceOps-Env contracts.
 
-Frozen typed contracts for the fulfillment-judgment environment.
-Per context.md, this file is the contract layer for T1 (warehouse assignment
-bootstrap), T2 (multi-order fulfillment triage, the headline task) and T3
-(cascade recovery, stretch). Do not rename keys after this freeze.
+Frozen typed contracts for the fulfillment-judgment environment, covering
+T1 (warehouse assignment), T2 (multi-order fulfillment triage, the
+headline task), and T3 (cascade recovery).
 
 Design choices:
 - ``EnvAction`` is a single Pydantic model with an action-type discriminator
@@ -31,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TaskType(str, Enum):
-    """High-level task family. T1 bootstraps action format; T2 is headline."""
+    """High-level task family. T2 is the headline task."""
 
     T1_WAREHOUSE_ASSIGNMENT = "t1_warehouse_assignment"
     T2_MULTI_ORDER_TRIAGE = "t2_multi_order_triage"

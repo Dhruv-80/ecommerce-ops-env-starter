@@ -15,35 +15,19 @@ Meta PyTorch OpenEnv Hackathon — Grand Finale submission.
 
 ---
 
-## Submission Package (Hackathon Deliverables)
+## Project Links
 
-| Deliverable | Link |
-|-------------|------|
-| **GitHub repo (env + training code)** | [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter) |
+| Resource | Link |
+|----------|------|
+| **GitHub repo** | [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter) |
 | **Live OpenEnv Space (Docker)** | [huggingface.co/spaces/YOUR_SPACE](https://huggingface.co/spaces/YOUR_SPACE) |
-| **Trained model (GRPO LoRA + tokenizer)** | [huggingface.co/TenduL/ecommerce-ops-grpo](https://huggingface.co/TenduL/ecommerce-ops-grpo) |
-| **Training logs & results dataset** | [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) |
-| **Blog post (writeup)** | [blog.md](blog.md) |
-| **Training script (HF Jobs UV)** | [train/hf_train.py](train/hf_train.py) |
-| **Training notebook (Colab / saved cells)** | [train/hf_train.ipynb](train/hf_train.ipynb) |
+| **Trained model (GRPO LoRA)** | [huggingface.co/TenduL/ecommerce-ops-grpo](https://huggingface.co/TenduL/ecommerce-ops-grpo) |
+| **Training logs / results dataset** | [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) |
+| **Blog post** | [blog.md](blog.md) |
+| **Training script** | [train/hf_train.py](train/hf_train.py) |
+| **Training notebook** | [train/hf_train.ipynb](train/hf_train.ipynb) |
 
-The training run pushes both `results.json` (per-task baseline + trained mean score / mean reward / invalid rate, full GRPO log history) and `reward_curves.png` to the results dataset above. The trained LoRA adapters + tokenizer are pushed to the model repo above.
-
-### Pre-Submission Checklist (last-hour run order)
-
-1. `git push` the latest env code (`tasks.py`, `verifier.py`, `environment.py`, `train/hf_train.py`) to [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter) — HF Jobs clones this repo at runtime.
-2. Confirm `.env` has `HF_TOKEN`, `HUB_MODEL_REPO=TenduL/ecommerce-ops-grpo`, `HUB_RESULTS_REPO=TenduL/ecommerce-ops-results`.
-3. Run training: `bash train/run_hf_job.sh` (or upload `train/hf_train.ipynb` to Colab and run all cells).
-4. Verify the trained adapters appear at [huggingface.co/TenduL/ecommerce-ops-grpo](https://huggingface.co/TenduL/ecommerce-ops-grpo).
-5. Verify `results.json` + `reward_curves.png` appear at [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results).
-6. Optional: upload the executed notebook so judges can browse the cells with outputs:
-   ```bash
-   huggingface-cli upload TenduL/ecommerce-ops-grpo train/hf_train.ipynb hf_train.executed.ipynb
-   ```
-7. Replace `YOUR_SPACE` in the table above with the actual Space URL once deployed.
-8. Submit hackathon form with the GitHub link, Space link, model link, results link, and `blog.md`.
-
----
+The training pipeline pushes `results.json` (per-task baseline + trained mean score / mean reward / invalid rate, full GRPO log history) and `reward_curves.png` to the results dataset above. The trained LoRA adapters and tokenizer are pushed to the model repo above.
 
 ---
 
@@ -57,11 +41,13 @@ A stateful, OpenEnv-compatible RL environment where a language model acts as a f
 
 ## The Three Tasks
 
-| Task | Name | Difficulty | Purpose |
+| Task | Name | Difficulty | Description |
 |------|------|----------|---------|
-| `task_1` | Warehouse Assignment | Easy | Bootstrap — single order, pick the best warehouse. Gets the model format-compliant early in training. |
-| `task_2` | Multi-Order Fulfillment Triage | Medium | **Headline task.** Two orders, one SKU, two warehouses with one unit each. Assign each order to its NEAR warehouse — if you waste W1 on the wrong order, the other order can't be served. |
-| `task_3` | Cascade Recovery | Medium | A supplier failure has zeroed stock at one warehouse. Reroute the pending order to the warehouse that still has stock. |
+| `task_1` | Warehouse Assignment | Easy | One incoming order; pick the closest valid warehouse with stock and the right shipping method. |
+| `task_2` | Multi-Order Fulfillment Triage | Medium | **Headline task.** Two orders share two warehouses with one unit of stock each. Each order has a clear NEAR warehouse based on its destination region. Wasting the only stocked warehouse on the wrong order leaves the other order unfilled. |
+| `task_3` | Cascade Recovery | Medium | A supplier failure has zeroed stock at one warehouse. The pending order must be rerouted to the warehouse that still has stock. |
+
+The scenarios are deterministic given `(task_id, seed)`. Seeds permute which order receives each tier (T2) and which warehouse failed (T3) so the agent can't memorize fixed answers.
 
 ---
 
@@ -97,7 +83,7 @@ A stateful, OpenEnv-compatible RL environment where a language model acts as a f
 - **Environment**: Python, Pydantic v2, FastAPI, OpenEnv
 - **RL algorithm**: GRPO via Hugging Face TRL
 - **Efficiency**: Unsloth 4-bit quantization
-- **Model**: Qwen2.5-1.5B-Instruct (cost-tuned for HF Jobs `l4x1`)
+- **Model**: Qwen2.5-1.5B-Instruct
 - **Deployment**: Hugging Face Spaces (Docker)
 
 ---
@@ -138,13 +124,13 @@ curl http://localhost:7860/baseline
 ### Run Tests
 
 ```bash
-pytest tests/ -q          # 92 tests
+pytest tests/ -q
 ```
 
 ### Run Evaluation
 
 ```bash
-python train/eval.py                            # Full 8-seed run
+python train/eval.py                            # Full multi-seed run
 python train/eval.py --fast-dev --no-plot       # Quick smoke test
 python train/eval.py --model ./grpo_output/final  # Include trained model
 ```
@@ -158,7 +144,7 @@ python train/eval.py --model ./grpo_output/final  # Include trained model
 | GET | `/health` | Liveness check |
 | POST | `/reset` | Start a new episode `{"task_id": "task_2", "seed": 0}` |
 | POST | `/step` | Submit one action, get next observation + reward |
-| GET | `/state` | Full internal state (debug/grading inspection) |
+| GET | `/state` | Full internal state (debug / grading inspection) |
 | GET | `/tasks` | Task catalogue |
 | POST | `/grader` | Episode score + breakdown |
 | GET | `/baseline` | Oracle baseline on all tasks |
@@ -170,14 +156,14 @@ python train/eval.py --model ./grpo_output/final  # Include trained model
 
 ## Training
 
-### Option 1: Google Colab (Recommended for Judges)
+### Option 1: Google Colab
 
 Open [`train/hf_train.ipynb`](train/hf_train.ipynb) in Colab:
 
-1. Click "Open in Colab" or upload the notebook
-2. Select GPU runtime: Runtime → Change runtime type → T4 GPU
-3. Set your HF token in Cell 4
-4. Run all cells (~45-60 minutes on T4)
+1. Click "Open in Colab" or upload the notebook.
+2. Select GPU runtime: Runtime → Change runtime type → T4 / L4 GPU.
+3. Set your HF token in the env-vars cell.
+4. Run all cells — every output (baseline eval, training logs, post-train eval, before/after table, reward curve) is captured in the notebook for review.
 
 ### Option 2: Hugging Face Jobs (One Command)
 
@@ -221,21 +207,7 @@ HF_TIMEOUT=2h
 | task_2 | 0.01 | -0.10 |
 | task_3 | 0.01 | -0.10 |
 
-### Latest GRPO Run (Qwen2.5-1.5B-Instruct, 80 steps)
-
-Pulled from [`results.json`](https://huggingface.co/datasets/TenduL/ecommerce-ops-results/blob/main/results.json):
-
-| Task | Baseline | Trained | Δ |
-|------|---------:|--------:|--:|
-| task_1 mean_score | 0.55 | 0.99 | **+0.44** |
-| task_1 invalid_rate | 0.57 | 0.00 | **−0.57** |
-| task_3 mean_score | 0.01 | 0.50 | **+0.49** |
-| task_3 invalid_rate | 1.00 | 0.00 | **−1.00** |
-| task_2 (re-scoped) | TBD | TBD | (pending re-run with new T2 design) |
-
-The reward delta between optimal and noop is **~3.0 on T2** and **~1.05 on T1/T3** — large enough that GRPO group-relative advantages are non-degenerate.
-
-*Live before/after numbers from each training run (mean score, mean reward, invalid rate per task) are pushed to [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) along with `reward_curves.png` and the full GRPO log history.*
+Live before/after numbers from each training run (mean score, mean reward, invalid rate per task) are pushed to [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) along with `reward_curves.png` and the full GRPO log history.
 
 ---
 
@@ -255,9 +227,8 @@ The reward delta between optimal and noop is **~3.0 on T2** and **~1.05 on T1/T3
 │   ├── metrics.py       # MetricsLogger + TrainingMetricsTracker
 │   └── eval.py          # Oracle vs random vs model evaluation
 ├── tests/
-│   ├── test_env.py      # 51 env + server tests
-│   ├── test_training.py # 19 metrics + eval tests
-│   └── …               # Legacy R1 tests
+│   ├── test_env.py      # Env + server tests
+│   └── test_training.py # Metrics + eval tests
 ├── openenv.yaml
 ├── Dockerfile
 ├── requirements.txt
@@ -285,13 +256,7 @@ docker run --rm -p 7860:7860 commerce-ops-env
 
 ## Blog Post
 
-See [`blog.md`](blog.md) for a detailed writeup on:
-
-- The problem and why it matters
-- Training approach (GRPO with fast-forwarded states)
-- What worked and what didn't
-- Key learnings and surprising findings
-- Future work
+See [`blog.md`](blog.md) for a detailed writeup on the problem, environment design, training approach, results, and reproducibility.
 
 ---
 

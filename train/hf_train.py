@@ -25,10 +25,10 @@ Env vars (pass as secrets / env in hf_jobs()):
   HUB_MODEL_REPO    e.g. "YOUR_USERNAME/ecommerce-ops-grpo"
   HUB_RESULTS_REPO  e.g. "YOUR_USERNAME/ecommerce-ops-results"
   MODEL_NAME        base model (default: Qwen/Qwen2.5-1.5B-Instruct)
-  TRAIN_STEPS       int, default 80 for the simplified tasks
+  TRAIN_STEPS       int, default 80
   FAST_DEV          "1" to run with 2 eval seeds (smoke test)
 
-The official submission repos for this hackathon entry:
+Submission repos:
   model:   https://huggingface.co/TenduL/ecommerce-ops-grpo
   results: https://huggingface.co/datasets/TenduL/ecommerce-ops-results
 
@@ -109,18 +109,17 @@ FAST_DEV         = os.environ.get("FAST_DEV", "0") == "1"
 
 EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(4))
 TRAIN_SEEDS     = list(range(4))
-# Train on all three tasks now that T2/T3 have been simplified to be
-# trainable on a tight budget. T1 stays included so we don't regress on it.
+# Train and evaluate on all three tasks together.
 TRAIN_TASKS     = ["task_1", "task_2", "task_3"]
 EVAL_TASKS      = ["task_1", "task_2", "task_3"]
 
-MAX_SEQ_LEN     = 1536           # Down from 2048 — observations are smaller now
+MAX_SEQ_LEN     = 1536
 LORA_R          = 16
 LORA_ALPHA      = 32
 LR              = 1e-5
-GRPO_N_SAMPLES  = 6              # Down from 8 — saves ~25% compute per step
+GRPO_N_SAMPLES  = 6
 BATCH_SIZE      = 2
-GRPO_TEMP       = 1.0            # Lower — sampling variance comes from N samples now
+GRPO_TEMP       = 1.0
 GRPO_TOP_P      = 0.95
 
 print(f"{'='*62}")
@@ -346,7 +345,7 @@ def _get_oracle_actions(task_id: str, seed: int = 0) -> List[Dict[str, Any]]:
             act["order_id"] = oid
             actions.append(act)
     elif task_id == "task_3":
-        # Single reroute decision per episode for the simplified T3.
+        # Single reroute decision per episode.
         for oid, action_info in gt.get("expected_actions", {}).items():
             act = dict(action_info)
             act["order_id"] = oid
@@ -367,9 +366,9 @@ def grpo_reward_fn(
       3. Apply the model's action
       4. Return env.reward (immediate feedback)
 
-    Why: Multi-step rollout was crashing (all -0.5 rewards). Single-step
-    gives stable learning signal. Task diversity from ff_steps provides
-    enough coverage for the model to learn the full trajectory.
+    Single-step rewards keep the GRPO learning signal stable; per-prompt
+    diversity from varying ff_steps gives the model coverage of every
+    state along the oracle trajectory.
     """
     task_ids = kwargs.get("task_id", ["task_1"] * len(completions))
     seeds    = kwargs.get("seed",    [0]        * len(completions))
@@ -542,8 +541,7 @@ def main() -> None:
         num_generations=GRPO_N_SAMPLES,
         learning_rate=LR,
         max_prompt_length=1024,
-        # Smaller completion budget — actions are tiny JSON objects (typical
-        # under 80 tokens). Cuts generation time and HF Jobs cost.
+        # Actions are tiny JSON objects (typically under 80 tokens).
         max_completion_length=96,
         logging_steps=10,
         save_steps=TRAIN_STEPS,

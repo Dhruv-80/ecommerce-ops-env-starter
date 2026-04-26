@@ -181,7 +181,7 @@ POST {{baseUrl}}/grader
 
 
 ###
-### ── Task 3: Cascade Recovery (stretch) ──────────────────────────────────
+### ── Task 3: Cascade Recovery ────────────────────────────────────────────
 ###
 ### Goal: recover from a supplier cancellation without collateral damage.
 ### Allowed actions: escalate_supplier, refund_or_compensate, reroute_order,

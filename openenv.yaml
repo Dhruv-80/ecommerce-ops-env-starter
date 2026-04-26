@@ -8,8 +8,8 @@ description: >
   CommerceOps-Env: an OpenEnv-compatible RL environment where an LLM agent
   learns to make human-like fulfillment decisions under inventory scarcity,
   SLA pressure, and competing customer priorities.
-  Three tasks — T1 warehouse assignment (bootstrap), T2 multi-order triage
-  (headline), T3 cascade recovery (stretch).
+  Three tasks — T1 warehouse assignment, T2 multi-order triage (headline),
+  T3 cascade recovery.
 tags:
   - openenv
   - ecommerce

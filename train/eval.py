@@ -95,7 +95,7 @@ def oracle_policy(env: CommerceOpsEnv) -> Dict[str, Any]:
                 action["reason"] = "oracle_delay"
             return action
 
-    if kind == "cascade_recovery_stub":
+    if kind == "cascade_recovery":
         exp_sup = gt.get("expected_supplier_escalation")
         if exp_sup and not state.policy_flags.get("supplier_escalated"):
             return {"action_type": "escalate_supplier", "supplier_id": exp_sup}

@@ -5,11 +5,12 @@ snapshot) and ground-truth payload to produce structured correctness
 signals. These signals feed ``reward.py`` *per step* and also drive the
 *final episode grade* shown in the /grader endpoint.
 
-Design rules (from context.md):
+Design rules:
 - Success is checked from environment state and business rules, NOT from
   model explanations.
-- Signals must be hard checks — no LLM judge, no "looks good" heuristics.
-- Partial credit is allowed in T2/T3 so reward stays smooth enough for RL.
+- Signals are hard checks — no LLM judge, no "looks good" heuristics.
+- Partial credit is supported on T2 and T3 so the reward signal is
+  monotonic across "right verb / right target / wrong target" outcomes.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def verify_step(
         signals.update(_step_verify_t1(action_type, warehouse_id, ground_truth))
     elif gt_kind == "multi_order_triage":
         signals.update(_step_verify_t2(action_type, order_id, warehouse_id, action, ground_truth, state_snapshot))
-    elif gt_kind in ("cascade_recovery_simple", "cascade_recovery_stub"):
+    elif gt_kind == "cascade_recovery":
         signals.update(_step_verify_t3(action_type, order_id, warehouse_id, action, ground_truth))
     else:
         # Unknown ground-truth kind — give no bonus, no penalty.
@@ -218,9 +219,8 @@ def _step_verify_t3(
         if action_type == ActionType.REROUTE_ORDER.value:
             exp_wh = exp.get("warehouse_id") or gt.get("healthy_warehouse")
             correct_wh = warehouse_id == exp_wh
-            # Partial credit for "tried to reroute" even if the destination
-            # was wrong — keeps the RL gradient alive while the model is
-            # still learning that REROUTE_ORDER is the right verb here.
+            # Partial credit when the verb is right but the warehouse is
+            # wrong, so the reward gradient is monotonic.
             return {
                 "correct_action_for_entity": True,
                 "state_update_correct": correct_wh,
@@ -247,10 +247,10 @@ def grade_episode(task_id: str, state: Any) -> Dict[str, Any]:
         return _grade_t1(state, gt)
     if kind == "multi_order_triage":
         return _grade_t2(state, gt)
-    if kind in ("cascade_recovery_simple", "cascade_recovery_stub"):
+    if kind == "cascade_recovery":
         return _grade_t3(state, gt)
 
-    # Fallback: task_id-based dispatch for backward compat.
+    # Fallback: task_id-based dispatch.
     if task_id == "task_1":
         return _grade_t1(state, gt)
     if task_id == "task_2":
@@ -412,16 +412,12 @@ def _grade_t2(state: Any, gt: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _grade_t3(state: Any, gt: Dict[str, Any]) -> Dict[str, Any]:
-    """Cascade-recovery grader.
+    """Cascade-recovery grader (single-order reroute under supplier failure).
 
-    For the simplified T3 (single-order reroute under supplier failure):
       - 1.00 if the order is reassigned to the healthy warehouse.
-      - 0.60 if the order is reassigned somewhere else with stock (it tried).
-      - 0.30 if the order is delayed (acceptable fallback).
+      - 0.60 if the order is reassigned to a non-healthy warehouse (tried).
+      - 0.30 if the order is delayed or refunded (acceptable fallback).
       - 0.01 otherwise.
-
-    The legacy `cascade_recovery_stub` payload (with refund + escalation) is
-    still tolerated so older recordings stay scoreable.
     """
     orders = _get(state, "orders", [])
     expected_actions = gt.get("expected_actions", {})
@@ -474,7 +470,7 @@ def _grade_t3(state: Any, gt: Dict[str, Any]) -> Dict[str, Any]:
     total = float(len(expected_actions))
     score = achieved / total if total else 0.0
 
-    # Optional supplier-escalation bonus only for the legacy stub task.
+    # Supplier-escalation bonus when the ground truth requests one.
     escalated = _get(state, "policy_flags", {}).get("supplier_escalated")
     if expected_sup and escalated == expected_sup:
         score = min(1.0, score + 0.1)
@@ -526,7 +522,7 @@ def is_task_resolved(state: Any) -> bool:
                 return False
         return True
 
-    if kind in ("cascade_recovery_simple", "cascade_recovery_stub"):
+    if kind == "cascade_recovery":
         expected_actions = gt.get("expected_actions", {})
         for oid in expected_actions:
             order = _order_by_id(orders, oid)

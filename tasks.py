@@ -1,12 +1,10 @@
 """Episode generators for CommerceOps-Env.
 
-Per ``context.md`` build order:
-- T1 (warehouse assignment) is the bootstrap task and must be easy enough
-  for the model to occasionally win early in training.
-- T2 (multi-order triage) is the headline task: limited stock, several
-  orders competing, the agent must fulfil / split / delay under tier and
-  SLA pressure.
-- T3 is stretch and only stubbed.
+- T1 (warehouse assignment) — single-order assignment.
+- T2 (multi-order triage) — headline task: per-warehouse stock scarcity
+  forces the agent to assign each order to its NEAR warehouse.
+- T3 (cascade recovery) — supplier failure has zeroed stock at one
+  warehouse; the agent must reroute the affected order.
 
 Episodes are deterministic given ``(task_id, seed)``. The same call always
 returns the same world so verifier and reward stay reproducible.
@@ -41,7 +39,7 @@ from models import (
 TASK_CATALOG: Dict[str, Dict[str, Any]] = {
     "task_1": {
         "task_type": TaskType.T1_WAREHOUSE_ASSIGNMENT.value,
-        "name": "Warehouse Assignment Bootstrap",
+        "name": "Warehouse Assignment",
         "difficulty": "easy",
         "max_steps": 4,
         "description": (
@@ -171,12 +169,12 @@ def _stock_qty(stock: List[Dict[str, Any]], sku: str, warehouse_id: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Task 1: single-order warehouse assignment (bootstrap)
+# Task 1: single-order warehouse assignment
 # ---------------------------------------------------------------------------
 
 
-# A few hand-crafted seeds, varying which warehouse wins so a model that
-# always picks "W1" gets penalised some of the time but not always.
+# Per-seed scenarios, varying which warehouse wins so a model that always
+# picks "W1" gets penalised some of the time but not always.
 _T1_SCENARIOS: List[Dict[str, Any]] = [
     {
         # W1 near + has stock + supports standard -> W1 wins
@@ -337,30 +335,17 @@ def _t1_best_warehouse(
 
 
 def _build_task_2(seed: int) -> Dict[str, Any]:
-    """Simplified multi-order triage: 2 orders, 1 SKU, 2 warehouses.
+    """Multi-order triage: 2 orders, 1 SKU, 2 warehouses.
 
-    Design rationale (after the 3-order-with-DELAY version trained to a
-    degenerate "delay everything" policy):
+    Two orders compete for two warehouses with one unit of stock each.
+    One order is destined for "north" (W1 is NEAR), the other for
+    "central" (W2 is NEAR). Wasting the only stocked warehouse on the
+    wrong order leaves the other order with no inventory to serve, so
+    the correct play is to assign each order to its NEAR warehouse.
 
-      - 2 orders, 1 SKU, 2 warehouses with 1 unit of stock each.
-        Total supply (2) == total demand (2) — no order needs to be delayed,
-        but the only correct play is to send EACH order to its nearer
-        warehouse. Wasting the only-stocked warehouse on the wrong order
-        leaves the other order with no inventory to serve.
-
-      - Both expected actions are ASSIGN_WAREHOUSE. There is no order whose
-        plan calls for DELAY, so a "delay everything" policy can no longer
-        farm step rewards.
-
-      - One order has its destination in "north" (W1 is NEAR), the other in
-        "central" (W2 is NEAR). Tier weights still differ (LOYALTY > PREMIUM)
-        so wrong assignments are not symmetric.
-
-      - max_steps = 4 leaves a 2-step retry buffer beyond the 2-step
-        oracle plan.
-
-    The seed permutes which order_id is which (O1 vs O2 carries each tier),
-    so the model cannot memorise "always assign O1 to W1".
+    Tier weights differ (LOYALTY > PREMIUM) so wrong assignments are
+    not symmetric in the grader. The seed permutes which order_id
+    carries each tier so the agent must read the order, not memorise.
     """
     rng = random.Random(seed)
     bundle = _bundle_skeleton("task_2")
@@ -437,139 +422,21 @@ def _build_task_2(seed: int) -> Dict[str, Any]:
     return bundle
 
 
-def _t2_priority_score(order: Dict[str, Any]) -> float:
-    """Higher means more important. Used for ranking, not for reward directly."""
-    tier_weight = TIER_WEIGHT.get(order["customer_tier"], 1.0)
-    sla = max(int(order["sla_hours_remaining"]), 1)
-    urgency = 48.0 / sla
-    return tier_weight * urgency
-
-
-def _t2_plan(
-    orders: List[Dict[str, Any]],
-    warehouses: List[Dict[str, Any]],
-    stock: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Compute a defensible ground-truth plan for a triage episode.
-
-    Greedy by priority score: walk highest-priority orders first, give each
-    its closest valid warehouse with stock; fall back to a 2-warehouse split
-    if no single warehouse has the full quantity but combined warehouses do;
-    otherwise mark the order as ``delay_order``. The verifier uses this both
-    as a target and to compute service-score thresholds for partial credit.
-    """
-    remaining = {(c["sku"], c["warehouse_id"]): int(c["quantity"]) for c in stock}
-    method_by_wh = {w["warehouse_id"]: set(w["supports_methods"]) for w in warehouses}
-
-    def _eligible_count(o: Dict[str, Any]) -> int:
-        return sum(1 for w in warehouses if o["required_method"] in method_by_wh[w["warehouse_id"]])
-
-    # Reserve slots for orders with the fewest eligible warehouses first so a
-    # premium express-only order isn't starved by greedy standard orders.
-    ranked = sorted(orders, key=lambda o: (_eligible_count(o), -_t2_priority_score(o)))
-
-    per_order: Dict[str, Dict[str, Any]] = {}
-    optimal_score = 0.0
-    infeasible: List[str] = []
-
-    for order in ranked:
-        wh_options = sorted(
-            warehouses,
-            key=lambda w: _DISTANCE_RANK.get(order["distance_buckets"].get(w["warehouse_id"], DistanceBucket.FAR.value), 99),
-        )
-
-        eligible = [w for w in wh_options if order["required_method"] in method_by_wh[w["warehouse_id"]]]
-        chosen = None
-        for w in eligible:
-            wid = w["warehouse_id"]
-            if remaining.get((order["sku"], wid), 0) >= order["quantity_requested"]:
-                chosen = ("assign_warehouse", [(wid, order["quantity_requested"])])
-                break
-
-        if chosen is None and len(eligible) >= 2:
-            need = order["quantity_requested"]
-            legs: List[tuple] = []
-            for w in eligible:
-                wid = w["warehouse_id"]
-                avail = remaining.get((order["sku"], wid), 0)
-                if avail <= 0:
-                    continue
-                take = min(avail, need)
-                if take > 0:
-                    legs.append((wid, take))
-                    need -= take
-                if need == 0:
-                    break
-            if need == 0 and len(legs) >= 2:
-                chosen = ("split_shipment", legs)
-
-        if chosen is None:
-            per_order[order["order_id"]] = {
-                "action_type": ActionType.DELAY_ORDER.value,
-                "reason": "stock_insufficient",
-            }
-            infeasible.append(order["order_id"])
-            continue
-
-        action_type, legs = chosen
-        for wid, qty in legs:
-            remaining[(order["sku"], wid)] = remaining.get((order["sku"], wid), 0) - qty
-
-        if action_type == "assign_warehouse":
-            per_order[order["order_id"]] = {
-                "action_type": ActionType.ASSIGN_WAREHOUSE.value,
-                "warehouse_id": legs[0][0],
-                "quantity": legs[0][1],
-            }
-        else:
-            per_order[order["order_id"]] = {
-                "action_type": ActionType.SPLIT_SHIPMENT.value,
-                "allocations": [{"warehouse_id": wid, "quantity": qty} for wid, qty in legs],
-            }
-        optimal_score += _t2_priority_score(order)
-
-    total_demand = sum(o["quantity_requested"] for o in orders)
-    total_supply = sum(int(c["quantity"]) for c in stock)
-
-    # Per-order weight = tier_weight only (no urgency scaling).
-    # Used by the grader so that achieved/optimal ratios are consistent.
-    per_order_weights: Dict[str, float] = {}
-    for o in orders:
-        per_order_weights[o["order_id"]] = TIER_WEIGHT.get(o["customer_tier"], 1.0)
-
-    # Optimal score = sum of tier weights of served (non-delayed) orders.
-    optimal_tier_score = sum(
-        per_order_weights[oid]
-        for oid in per_order
-        if per_order[oid]["action_type"] != ActionType.DELAY_ORDER.value
-    )
-
-    return {
-        "per_order": per_order,
-        "per_order_weights": per_order_weights,
-        "priority_order": [o["order_id"] for o in ranked],
-        "optimal_service_score": round(optimal_tier_score, 4),
-        "infeasible_orders": infeasible,
-        "demand_exceeds_supply": total_demand > total_supply,
-    }
-
-
 # ---------------------------------------------------------------------------
-# Task 3: cascade recovery (stretch — minimal stub)
+# Task 3: cascade recovery
 # ---------------------------------------------------------------------------
 
 
 def _build_task_3(seed: int) -> Dict[str, Any]:
-    """Simplified cascade recovery: a single supplier-failure reroute.
+    """Cascade recovery: a single supplier-failure reroute.
 
-    Design (intentionally trainable for tiny GRPO budgets):
-      - 1 SKU, 2 warehouses, 1 active order.
-      - W1 has had a supplier failure -> stock = 0.
-      - W2 still has stock -> the only correct move is to reroute O1 to W2.
-      - max_steps = 4. The model needs ONE correct action to win.
+    1 SKU, 2 warehouses, 1 active order. One warehouse has had a
+    supplier failure (stock = 0); the other still has stock. The
+    correct move is to reroute the order to the warehouse that still
+    has stock.
 
-    The seed swaps which warehouse failed so the model can't memorise a
-    fixed answer ("always W2"). It must read the stock table.
+    The seed swaps which warehouse failed so the agent must read the
+    stock table; "always W2" is wrong on half of the seeds.
     """
     rng = random.Random(seed)
     bundle = _bundle_skeleton("task_3")
@@ -614,7 +481,7 @@ def _build_task_3(seed: int) -> Dict[str, Any]:
     # Use the same "kind" the verifier already understands; the new build is
     # a clean single-decision reroute task, no escalation/refund required.
     bundle["ground_truth"] = {
-        "kind": "cascade_recovery_simple",
+        "kind": "cascade_recovery",
         "expected_actions": {
             "O1": {"action_type": ActionType.REROUTE_ORDER.value, "warehouse_id": healthy_wh},
         },
