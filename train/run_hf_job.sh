@@ -41,6 +41,18 @@ set -a
 source "$ENV_FILE_PATH"
 set +a
 
+echo ""
+echo "=== Loaded Environment Configuration ==="
+echo "MODEL_NAME:   $MODEL_NAME"
+echo "TRAIN_STEPS:  $TRAIN_STEPS"
+echo "HF_FLAVOR:    $HF_FLAVOR"
+echo "HF_TIMEOUT:   $HF_TIMEOUT"
+echo "ENV_REPO_URL: $ENV_REPO_URL"
+echo "HUB_MODEL_REPO:  $HUB_MODEL_REPO"
+echo "HUB_RESULTS_REPO: $HUB_RESULTS_REPO"
+echo "========================================"
+echo ""
+
 require_env() {
   local key="$1"
   if [[ -z "${!key:-}" ]]; then
