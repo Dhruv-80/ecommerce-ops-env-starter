@@ -138,6 +138,28 @@ Open `train/grpo_train.ipynb` in Colab (T4 GPU).
 6. Cell 14 saves `grpo_curves.png`.
 7. Cell 15 inspects one T2 rollout to verify the reward increase is from better decisions, not format gaming.
 
+### One-command HF Job launch
+
+Set the training values once in `.env`, then run:
+
+```bash
+bash train/run_hf_job.sh
+```
+
+Required `.env` keys for this launcher:
+
+```bash
+HF_TOKEN=hf_xxx
+ENV_REPO_URL=https://github.com/Dhruv-80/ecommerce-ops-env-starter.git
+HUB_MODEL_REPO=YOUR_USERNAME/commerce-ops-grpo
+HUB_RESULTS_REPO=YOUR_USERNAME/commerce-ops-results
+MODEL_NAME=TenduL/commerce-ops-grpo
+TRAIN_STEPS=800
+FAST_DEV=0
+HF_FLAVOR=l4x1
+HF_TIMEOUT=4h
+```
+
 ### Expected before/after (reference numbers from eval.py)
 
 | Policy | T1 score | T2 score |

@@ -12,6 +12,7 @@
 #   "pydantic>=2.8.0",
 #   "numpy>=1.26.0",
 #   "matplotlib>=3.9.0",
+#   "python-dotenv",
 # ]
 # ///
 """CommerceOps-Env — GRPO training script for HF Jobs.
@@ -50,23 +51,33 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
-from huggingface_hub import HfApi, login, whoami
+import warnings
+import transformers
+from huggingface_hub import HfApi, login
+from dotenv import load_dotenv
+
+warnings.filterwarnings("ignore")
+transformers.logging.set_verbosity_error()
+
+# Load variables from .env file into os.environ
+load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Config from env vars
+# Config from env vars (strictly loaded from .env)
 # ---------------------------------------------------------------------------
 
-HF_TOKEN        = (
-    os.environ.get("HF_TOKEN_PUSH", "")
-    or os.environ.get("HUGGING_FACE_HUB_TOKEN", "")
-    or os.environ.get("HF_TOKEN", "")
-)
-FAST_DEV        = os.environ.get("FAST_DEV", "0") == "1"
-TRAIN_STEPS     = int(os.environ.get("TRAIN_STEPS", "80" if FAST_DEV else "800"))
+HF_TOKEN         = os.environ["HF_TOKEN"]
+ENV_REPO_URL     = os.environ["ENV_REPO_URL"]
+HUB_MODEL_REPO   = os.environ["HUB_MODEL_REPO"]
+HUB_RESULTS_REPO = os.environ["HUB_RESULTS_REPO"]
+MODEL_NAME       = os.environ["MODEL_NAME"]
+TRAIN_STEPS      = int(os.environ["TRAIN_STEPS"])
+FAST_DEV         = os.environ.get("FAST_DEV", "0") == "1"
+
 EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(8))
 TRAIN_SEEDS     = list(range(8)) if FAST_DEV else list(range(8))
 TRAIN_TASKS     = ["task_2"] if FAST_DEV else ["task_2"]
-MODEL_NAME      = os.environ.get("MODEL_NAME", "TenduL/commerce-ops-grpo")
+
 MAX_SEQ_LEN     = 2048
 LORA_R          = 16
 LORA_ALPHA      = 32
@@ -76,18 +87,6 @@ BATCH_SIZE      = 2
 GRPO_TEMP       = 1.2          # > 1.0 forces variance among the N samples per prompt
 GRPO_TOP_P      = 0.95
 
-# Hub targets — only call whoami when the env vars aren't already set
-HUB_MODEL_REPO   = os.environ.get("HUB_MODEL_REPO")
-HUB_RESULTS_REPO = os.environ.get("HUB_RESULTS_REPO")
-
-if not HUB_MODEL_REPO or not HUB_RESULTS_REPO:
-    try:
-        _me = whoami(token=HF_TOKEN, cache=True)["name"]
-    except Exception:
-        _me = "user"
-    HUB_MODEL_REPO   = HUB_MODEL_REPO   or f"{_me}/commerce-ops-grpo"
-    HUB_RESULTS_REPO = HUB_RESULTS_REPO or f"{_me}/commerce-ops-results"
-
 print(f"{'='*62}")
 print(f"  CommerceOps-Env GRPO Training")
 print(f"  model      : {MODEL_NAME}")
@@ -96,10 +95,6 @@ print(f"  hub_model  : {HUB_MODEL_REPO}")
 print(f"  hub_results: {HUB_RESULTS_REPO}")
 print(f"  device     : {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu'}")
 print(f"  token      : {'SET (len=' + str(len(HF_TOKEN)) + ')' if HF_TOKEN else 'EMPTY ❌ — Hub push will be skipped'}")
-print(f"  token_src  : "
-      f"HF_TOKEN_PUSH={'y' if os.environ.get('HF_TOKEN_PUSH') else 'n'} "
-      f"HUGGING_FACE_HUB_TOKEN={'y' if os.environ.get('HUGGING_FACE_HUB_TOKEN') else 'n'} "
-      f"HF_TOKEN={'y' if os.environ.get('HF_TOKEN') else 'n'}")
 print(f"{'='*62}\n")
 
 if HF_TOKEN:
@@ -109,7 +104,7 @@ if HF_TOKEN:
 # Locate the env package — clone on HF Jobs, use local files otherwise
 # ---------------------------------------------------------------------------
 
-REPO_URL = os.environ.get("ENV_REPO_URL", "")
+REPO_URL = ENV_REPO_URL
 REPO_DIR = "/tmp/commerce-ops-env"
 
 # Derive the project root relative to this script (train/hf_train.py → ../)
@@ -293,8 +288,28 @@ def _evaluate(model, tokenizer, label: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# GRPO reward function
+# GRPO reward function & Oracle Fast-Forward
 # ---------------------------------------------------------------------------
+
+def _get_oracle_actions(task_id: str, seed: int = 0) -> List[Dict[str, Any]]:
+    """Get the ground truth sequence of correct actions for a task."""
+    bundle = get_task_bundle(task_id, seed)
+    gt = bundle.get("ground_truth", {})
+    actions = []
+    if task_id == "task_1":
+        best = gt.get("best_warehouse")
+        if best:
+            actions.append({
+                "action_type": "assign_warehouse", 
+                "order_id": gt.get("order_id"), 
+                "warehouse_id": best
+            })
+    elif task_id == "task_2":
+        for oid, action_info in gt.get("plan", {}).items():
+            act = dict(action_info)
+            act["order_id"] = oid
+            actions.append(act)
+    return actions
 
 
 # Module-level handles to the trainable model + tokenizer. Set in main()
@@ -333,43 +348,39 @@ def grpo_reward_fn(
     completions: List[str],
     **kwargs,
 ) -> List[float]:
-    """Multi-step rollout reward.
-
-    For each (prompt, completion) pair the trainer hands us:
-      1. Reset the env to (task_id, seed).
-      2. Apply the model's *first* action (the trainable completion).
-      3. Greedily roll out the remainder of the episode with the SAME
-         model (no_grad, do_sample=False) until done or max_steps.
-      4. Return the final episode score (0..1) as the reward.
-
-    Why: single-step reward only credits the immediate move, so on a
-    multi-order task like task_2 the model converges to a per-order
-    optimum that doesn't compose into a good full-episode score. Scoring
-    on the rollout's final score gives proper credit assignment — the
-    advantage now reflects "how good is this first move *given that I'll
-    continue acting with my current policy?*"
-    """
+    """Multi-step rollout reward starting from a fast-forwarded state.
+    Evaluates how good the chosen action is for the *final* episode score."""
     task_ids = kwargs.get("task_id", ["task_1"] * len(completions))
     seeds    = kwargs.get("seed",    [0]        * len(completions))
+    ff_steps = kwargs.get("ff_steps", [0]       * len(completions))
+    
     model     = _GLOBAL_MODEL
     tokenizer = _GLOBAL_TOKENIZER
-
-    rewards: List[float] = []
-    for completion, task_id, seed in zip(completions, task_ids, seeds):
-        first_action = _extract_action(completion)
+    rewards  = []
+    
+    for completion, task_id, seed, ff in zip(completions, task_ids, seeds, ff_steps):
+        action = _extract_action(completion)
         try:
             env = CommerceOpsEnv()
             env.reset(task_id=task_id, seed=int(seed))
-            obs = env.step(first_action)
-            steps = 1
-            # Roll out the rest with the current model. If model+tokenizer
-            # aren't wired (e.g. unit-test path), fall back to single-step
-            # reward and skip the rollout — keeps the function robust.
+            
+            # Fast-forward the environment to the mid-episode state
+            oracle_actions = _get_oracle_actions(task_id, int(seed))
+            for a in oracle_actions[:ff]:
+                env.step(a)
+                
+            # Apply the model's chosen action
+            obs = env.step(action)
+            steps = env.state.step
+            
+            # Multi-step rollout: let the model finish the episode greedily
             if model is not None and tokenizer is not None:
                 while not obs.done and steps < env.state.max_steps:
                     next_action = _greedy_action(model, tokenizer, obs)
                     obs = env.step(next_action)
                     steps += 1
+                    
+            # Return the FINAL EPISODE SCORE as the reward, giving true sequence feedback
             final = env.final_score()
             rewards.append(float(final.get("score", 0.0)))
         except Exception:
@@ -382,9 +393,15 @@ def grpo_reward_fn(
 # ---------------------------------------------------------------------------
 
 
-def _make_prompt(task_id: str, seed: int, tokenizer) -> str:
+def _make_prompt(task_id: str, seed: int, tokenizer, ff_steps: int = 0) -> str:
     env = CommerceOpsEnv()
     obs = env.reset(task_id=task_id, seed=seed)
+    
+    # Fast-forward to the target mid-episode state
+    oracle_actions = _get_oracle_actions(task_id, seed)
+    for a in oracle_actions[:ff_steps]:
+        env.step(a)
+        
     msgs = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user",   "content": _obs_to_text(obs)},
@@ -482,11 +499,30 @@ def main() -> None:
     )
 
     # ── 4. Dataset ────────────────────────────────────────────────────
-    prompts = [
-        {"prompt": _make_prompt(tid, seed, tokenizer), "task_id": tid, "seed": seed}
-        for tid in TRAIN_TASKS
-        for seed in TRAIN_SEEDS
-    ]
+    prompts = []
+    
+    # We "fast-forward" the environment to generate prompts that simulate
+    # step 0, step 1, step 2, etc., so the model learns the full trajectory.
+    for tid in TRAIN_TASKS:
+        for seed in TRAIN_SEEDS:
+            oracle_len = len(_get_oracle_actions(tid, seed))
+            # We add a Prompt for every single step of the task!
+            for ff in range(oracle_len):
+                # Don't prompt steps where the environment is already done
+                env = CommerceOpsEnv()
+                obs = env.reset(task_id=tid, seed=seed)
+                for a in _get_oracle_actions(tid, seed)[:ff]:
+                    obs = env.step(a)
+                if obs.done: 
+                    break
+                    
+                prompts.append({
+                    "prompt": _make_prompt(tid, seed, tokenizer, ff_steps=ff),
+                    "task_id": tid,
+                    "seed": seed,
+                    "ff_steps": ff
+                })
+                
     train_dataset = Dataset.from_list(prompts)
     print(f"\nTraining dataset: {len(train_dataset)} prompts  steps={TRAIN_STEPS}")
 
