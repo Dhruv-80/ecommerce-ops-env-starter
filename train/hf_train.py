@@ -22,19 +22,24 @@ Pushes the trained model, eval results JSON, and reward curve PNG to Hub.
 
 Env vars (pass as secrets / env in hf_jobs()):
   HF_TOKEN          required — write token to push results
-  HUB_MODEL_REPO    e.g. "YOUR_USERNAME/commerce-ops-grpo"  (default: derive from whoami)
-  HUB_RESULTS_REPO  e.g. "YOUR_USERNAME/commerce-ops-results" (default: derive from whoami)
-  TRAIN_STEPS       int, default 200
-  FAST_DEV          "1" to run 5 steps + 2 seeds only (smoke test)
+  HUB_MODEL_REPO    e.g. "YOUR_USERNAME/ecommerce-ops-grpo"
+  HUB_RESULTS_REPO  e.g. "YOUR_USERNAME/ecommerce-ops-results"
+  MODEL_NAME        base model (default: Qwen/Qwen2.5-1.5B-Instruct)
+  TRAIN_STEPS       int, default 80 for the simplified tasks
+  FAST_DEV          "1" to run with 2 eval seeds (smoke test)
+
+The official submission repos for this hackathon entry:
+  model:   https://huggingface.co/TenduL/ecommerce-ops-grpo
+  results: https://huggingface.co/datasets/TenduL/ecommerce-ops-results
 
 Usage (from CLI after hf login):
   hf jobs uv run train/hf_train.py \\
     --flavor l4x1 \\
     --timeout 2h \\
-    --env TRAIN_STEPS=200 \\
+    --env TRAIN_STEPS=80 \\
     --secret HF_TOKEN=$HF_TOKEN \\
-    --env HUB_MODEL_REPO=YOUR_USERNAME/commerce-ops-grpo \\
-    --env HUB_RESULTS_REPO=YOUR_USERNAME/commerce-ops-results
+    --env HUB_MODEL_REPO=YOUR_USERNAME/ecommerce-ops-grpo \\
+    --env HUB_RESULTS_REPO=YOUR_USERNAME/ecommerce-ops-results
 """
 
 from __future__ import annotations

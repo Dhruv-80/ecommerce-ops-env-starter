@@ -104,7 +104,7 @@ A GPU pre-flight check at the very top of `hf_train.py` exits before any heavy i
 | task_2 | 0.41 | *baseline-eval* | *post-train-eval* | 0.99 |
 | task_3 | 0.30 | *baseline-eval* | *post-train-eval* | 0.99 |
 
-Live numbers (mean score / mean reward / invalid rate per task) are written to [huggingface.co/datasets/TenduL/commerce-ops-results-3](https://huggingface.co/datasets/TenduL/commerce-ops-results-3) at the end of every training run.
+Live numbers (mean score / mean reward / invalid rate per task) — plus the full GRPO log history and `reward_curves.png` — are written to [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) at the end of every training run.
 
 ### Cumulative reward on perfect play (sanity check)
 
@@ -149,8 +149,8 @@ The reward delta between optimal and all-noop policies is **~3.0 on T2** and **~
 All code, environment definitions, and results are public:
 
 - **GitHub**: [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter)
-- **Trained model**: [huggingface.co/TenduL/commerce-ops-grpo-3](https://huggingface.co/TenduL/commerce-ops-grpo-3)
-- **Training results**: [huggingface.co/datasets/TenduL/commerce-ops-results-3](https://huggingface.co/datasets/TenduL/commerce-ops-results-3)
+- **Trained model**: [huggingface.co/TenduL/ecommerce-ops-grpo](https://huggingface.co/TenduL/ecommerce-ops-grpo)
+- **Training results / logs**: [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results)
 - **Live OpenEnv space**: [huggingface.co/spaces/YOUR_SPACE](https://huggingface.co/spaces/YOUR_SPACE)
 
 To reproduce:

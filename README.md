@@ -15,15 +15,35 @@ Meta PyTorch OpenEnv Hackathon — Grand Finale submission.
 
 ---
 
-## Quick Links
+## Submission Package (Hackathon Deliverables)
 
-| Resource | Link |
-|----------|------|
-| **Live Demo Space** | [huggingface.co/spaces/YOUR_SPACE](https://huggingface.co/spaces/YOUR_SPACE) |
-| **Trained Model** | [huggingface.co/TenduL/commerce-ops-grpo](https://huggingface.co/TenduL/commerce-ops-grpo) |
-| **Training Results** | [huggingface.co/datasets/TenduL/commerce-ops-results](https://huggingface.co/datasets/TenduL/commerce-ops-results) |
-| **Blog Post** | [blog.md](blog.md) |
-| **Training Notebook** | [train/hf_train.ipynb](train/hf_train.ipynb) |
+| Deliverable | Link |
+|-------------|------|
+| **GitHub repo (env + training code)** | [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter) |
+| **Live OpenEnv Space (Docker)** | [huggingface.co/spaces/YOUR_SPACE](https://huggingface.co/spaces/YOUR_SPACE) |
+| **Trained model (GRPO LoRA + tokenizer)** | [huggingface.co/TenduL/ecommerce-ops-grpo](https://huggingface.co/TenduL/ecommerce-ops-grpo) |
+| **Training logs & results dataset** | [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) |
+| **Blog post (writeup)** | [blog.md](blog.md) |
+| **Training script (HF Jobs UV)** | [train/hf_train.py](train/hf_train.py) |
+| **Training notebook (Colab / saved cells)** | [train/hf_train.ipynb](train/hf_train.ipynb) |
+
+The training run pushes both `results.json` (per-task baseline + trained mean score / mean reward / invalid rate, full GRPO log history) and `reward_curves.png` to the results dataset above. The trained LoRA adapters + tokenizer are pushed to the model repo above.
+
+### Pre-Submission Checklist (last-hour run order)
+
+1. `git push` the latest env code (`tasks.py`, `verifier.py`, `environment.py`, `train/hf_train.py`) to [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter) — HF Jobs clones this repo at runtime.
+2. Confirm `.env` has `HF_TOKEN`, `HUB_MODEL_REPO=TenduL/ecommerce-ops-grpo`, `HUB_RESULTS_REPO=TenduL/ecommerce-ops-results`.
+3. Run training: `bash train/run_hf_job.sh` (or upload `train/hf_train.ipynb` to Colab and run all cells).
+4. Verify the trained adapters appear at [huggingface.co/TenduL/ecommerce-ops-grpo](https://huggingface.co/TenduL/ecommerce-ops-grpo).
+5. Verify `results.json` + `reward_curves.png` appear at [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results).
+6. Optional: upload the executed notebook so judges can browse the cells with outputs:
+   ```bash
+   huggingface-cli upload TenduL/ecommerce-ops-grpo train/hf_train.ipynb hf_train.executed.ipynb
+   ```
+7. Replace `YOUR_SPACE` in the table above with the actual Space URL once deployed.
+8. Submit hackathon form with the GitHub link, Space link, model link, results link, and `blog.md`.
+
+---
 
 ---
 
@@ -172,8 +192,8 @@ Required `.env` keys:
 ```bash
 HF_TOKEN=hf_xxx
 ENV_REPO_URL=https://github.com/Dhruv-80/ecommerce-ops-env-starter.git
-HUB_MODEL_REPO=YOUR_USERNAME/commerce-ops-grpo
-HUB_RESULTS_REPO=YOUR_USERNAME/commerce-ops-results
+HUB_MODEL_REPO=YOUR_USERNAME/ecommerce-ops-grpo
+HUB_RESULTS_REPO=YOUR_USERNAME/ecommerce-ops-results
 MODEL_NAME=Qwen/Qwen2.5-1.5B-Instruct
 TRAIN_STEPS=80
 FAST_DEV=0
@@ -203,7 +223,7 @@ HF_TIMEOUT=2h
 
 The reward delta between optimal and noop is **~3.0 on T2** and **~1.05 on T1/T3** — large enough that GRPO group-relative advantages are non-degenerate.
 
-*Live before/after numbers from each training run (mean score, mean reward, invalid rate per task) are pushed to [huggingface.co/datasets/TenduL/commerce-ops-results-3](https://huggingface.co/datasets/TenduL/commerce-ops-results-3) along with `reward_curves.png`.*
+*Live before/after numbers from each training run (mean score, mean reward, invalid rate per task) are pushed to [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) along with `reward_curves.png` and the full GRPO log history.*
 
 ---
 

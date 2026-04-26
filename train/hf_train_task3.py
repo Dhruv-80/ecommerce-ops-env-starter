@@ -14,36 +14,21 @@
 #   "matplotlib>=3.9.0",
 # ]
 # ///
-"""CommerceOps-Env — GRPO training for *task_3* (cascade recovery).
+"""[DEPRECATED — do NOT run this for the hackathon submission]
 
-Companion to ``train/hf_train.py`` (which trains task_2). This file is
-fully self-contained on purpose — running it must never disturb the
-task_2 pipeline.
+This file targeted the *original* task_3 design (multi-action cascade with
+``escalate_supplier`` + ``refund_or_compensate``). Task 3 has since been
+re-scoped to a single-decision reroute under supplier failure, and the
+current canonical training script trains all three tasks (T1, T2, T3)
+together with the simplified reward signal.
 
-What's different from hf_train.py:
-  • TRAIN_TASKS / EVAL_TASKS  = ["task_3"] only
-  • _SYSTEM_PROMPT            includes few-shot for reroute_order,
-                              escalate_supplier, refund_or_compensate, plus
-                              a sequencing hint ("escalate first")
-  • Default MODEL_NAME        = base Qwen (task_2 checkpoints would
-                              actively hurt — different action set)
-  • Default HUB repos         = …/commerce-ops-grpo-task3
-                              …/commerce-ops-results-task3
-  • Plot + comparison table   focus on task_3
+▶ Use ``train/hf_train.py`` (or ``train/hf_train.ipynb``) instead.
+   Submission repos:
+     model:   https://huggingface.co/TenduL/ecommerce-ops-grpo
+     results: https://huggingface.co/datasets/TenduL/ecommerce-ops-results
 
-What's identical to hf_train.py:
-  • Multi-step rollout reward (a7ad8f3) — works for task_3 too
-  • LoRA / GRPOConfig hyper-parameters
-  • HF Jobs bootstrap (git clone of env code on remote)
-
-Usage:
-  hf jobs uv run train/hf_train_task3.py \\
-    --flavor a10g-large \\
-    --timeout 4h \\
-    --env ENV_REPO_URL=https://github.com/Dhruv-80/ecommerce-ops-env-starter.git \\
-    --env HUB_MODEL_REPO=USER/commerce-ops-grpo-task3 \\
-    --env HUB_RESULTS_REPO=USER/commerce-ops-results-task3 \\
-    --env HF_TOKEN_PUSH=$HF_TOKEN
+This file is kept only for historical reference; it is unused by the
+submission pipeline.
 """
 
 from __future__ import annotations
