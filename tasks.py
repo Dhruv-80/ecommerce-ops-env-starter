@@ -53,22 +53,23 @@ TASK_CATALOG: Dict[str, Dict[str, Any]] = {
         "task_type": TaskType.T2_MULTI_ORDER_TRIAGE.value,
         "name": "Multi-Order Fulfillment Triage",
         "difficulty": "medium",
-        "max_steps": 12,
+        "max_steps": 5,
         "description": (
-            "Several orders compete for limited stock across warehouses. "
-            "Decide which orders to assign, split, delay or deprioritize "
-            "while balancing customer tier and SLA pressure."
+            "Three orders compete for limited stock across two warehouses. "
+            "Total stock < total demand, so one order MUST be delayed. "
+            "Pick the lowest-tier order to delay; assign the other two to "
+            "their nearest stocked warehouse."
         ),
     },
     "task_3": {
         "task_type": TaskType.T3_CASCADE_RECOVERY.value,
-        "name": "Cascade Recovery (Stretch)",
-        "difficulty": "hard",
-        "max_steps": 16,
+        "name": "Cascade Recovery",
+        "difficulty": "medium",
+        "max_steps": 4,
         "description": (
-            "A supplier or shipment failure occurs after earlier "
-            "allocation decisions. Recover by rerouting, compensating, "
-            "or escalating without causing downstream damage."
+            "A supplier failure has zeroed out stock at one warehouse. "
+            "The pending order must be rerouted to the alternative "
+            "warehouse that still has stock."
         ),
     },
 }
@@ -336,89 +337,108 @@ def _t1_best_warehouse(
 
 
 def _build_task_2(seed: int) -> Dict[str, Any]:
-    """Generate a triage scenario where stock is intentionally insufficient.
+    """Simplified multi-order triage: 3 orders, 1 SKU, 2 warehouses.
 
-    The episode is parameterised by ``seed`` so we get reproducible variety.
-    Concretely: ~6 orders, 2 SKUs, 2 warehouses, total stock < total demand,
-    so the agent MUST delay or split some orders. Tier and SLA differ across
-    orders so that delaying a loyalty/urgent order is the wrong call.
+    Design (intentionally trainable for tiny GRPO budgets):
+      - 3 orders all want the same SKU, all standard shipping.
+      - Total stock = 2 (W1=1, W2=1) so demand (3) > supply (2) and exactly
+        one order MUST be delayed.
+      - Tiers are always {LOYALTY, PREMIUM, STANDARD} (one of each), so the
+        STANDARD-tier order is the unambiguous "delay" choice.
+      - Each order has a different destination region, so its nearest
+        warehouse is also unambiguous (LOYALTY is near W1, PREMIUM is near
+        W2, STANDARD would have been near whichever has stock left, but it
+        gets delayed anyway).
+      - max_steps = 5 keeps the trajectory short; the model needs only 3
+        decisions to clear the episode.
+
+    The seed only permutes which order_id (O1/O2/O3) gets each tier so the
+    agent can't memorise "always delay O3".
     """
     rng = random.Random(seed)
     bundle = _bundle_skeleton("task_2")
 
-    # Two warehouses, both standard-capable; only W2 supports express so
-    # express-required orders narrow down naturally.
+    # Two simple warehouses, both standard-capable. No express — keeps the
+    # decision purely about distance + scarcity.
     bundle["warehouses"] = [
         _wh("W1", "north", [ShippingMethod.STANDARD.value]),
-        _wh("W2", "central", [ShippingMethod.STANDARD.value, ShippingMethod.EXPRESS.value]),
+        _wh("W2", "central", [ShippingMethod.STANDARD.value]),
     ]
 
-    # Constrained stock: total supply (5) < total demand (6) so at least one
-    # order must be delayed. W2 always has both SKUs so the two
-    # express-required orders (O1 SKU-A, O4 SKU-B) remain feasible.
-    sku_a_w1 = rng.choice([1, 2])
-    sku_a_w2 = max(1, 3 - sku_a_w1)
-    sku_b_w1 = 1
-    sku_b_w2 = 1
+    # Single SKU, exactly 1 unit per warehouse. Demand 3 > supply 2.
     bundle["stock"] = [
-        _stock("W1", "SKU-A", sku_a_w1),
-        _stock("W2", "SKU-A", sku_a_w2),
-        _stock("W1", "SKU-B", sku_b_w1),
-        _stock("W2", "SKU-B", sku_b_w2),
+        _stock("W1", "SKU-A", 1),
+        _stock("W2", "SKU-A", 1),
     ]
 
-    # Six orders. Mix of tiers and urgencies; two require express -> forces W2.
-    tiers = [
-        CustomerTier.LOYALTY.value,
-        CustomerTier.PREMIUM.value,
-        CustomerTier.STANDARD.value,
-        CustomerTier.PREMIUM.value,
-        CustomerTier.STANDARD.value,
-        CustomerTier.STANDARD.value,
-    ]
-    rng.shuffle(tiers)
-
-    base_orders = [
-        ("O1", "SKU-A", 1, 8,  "central", ShippingMethod.EXPRESS.value),
-        ("O2", "SKU-A", 1, 24, "north",   ShippingMethod.STANDARD.value),
-        ("O3", "SKU-A", 1, 36, "south",   ShippingMethod.STANDARD.value),
-        ("O4", "SKU-B", 1, 16, "central", ShippingMethod.EXPRESS.value),
-        ("O5", "SKU-B", 1, 48, "north",   ShippingMethod.STANDARD.value),
-        ("O6", "SKU-B", 1, 30, "south",   ShippingMethod.STANDARD.value),
-    ]
-    distance_for_region = {
-        "north":   {"W1": DistanceBucket.NEAR.value, "W2": DistanceBucket.MID.value},
-        "central": {"W1": DistanceBucket.MID.value,  "W2": DistanceBucket.NEAR.value},
-        "south":   {"W1": DistanceBucket.FAR.value,  "W2": DistanceBucket.MID.value},
+    # Three orders, one of each tier. Region is fixed per tier so the
+    # "right" warehouse is unambiguous.
+    #   loyalty -> region "north"   -> W1 is NEAR (best fit)
+    #   premium -> region "central" -> W2 is NEAR (best fit)
+    #   standard -> region "south"  -> both FAR; gets delayed anyway
+    tier_to_region = {
+        CustomerTier.LOYALTY.value:  ("north",   {"W1": DistanceBucket.NEAR.value, "W2": DistanceBucket.MID.value}),
+        CustomerTier.PREMIUM.value:  ("central", {"W1": DistanceBucket.MID.value,  "W2": DistanceBucket.NEAR.value}),
+        CustomerTier.STANDARD.value: ("south",   {"W1": DistanceBucket.FAR.value,  "W2": DistanceBucket.FAR.value}),
     }
-    for (oid, sku, qty, sla, region, method), tier in zip(base_orders, tiers):
+    tier_to_sla = {
+        CustomerTier.LOYALTY.value:  12,
+        CustomerTier.PREMIUM.value:  24,
+        CustomerTier.STANDARD.value: 48,
+    }
+
+    order_ids = ["O1", "O2", "O3"]
+    tiers = [CustomerTier.LOYALTY.value, CustomerTier.PREMIUM.value, CustomerTier.STANDARD.value]
+    rng.shuffle(order_ids)
+
+    plan: Dict[str, Dict[str, Any]] = {}
+    per_order_weights: Dict[str, float] = {}
+    infeasible: List[str] = []
+    optimal_score = 0.0
+
+    for oid, tier in zip(order_ids, tiers):
+        region, dist = tier_to_region[tier]
         bundle["orders"].append(
             _order(
                 order_id=oid,
-                sku=sku,
-                quantity=qty,
+                sku="SKU-A",
+                quantity=1,
                 tier=tier,
-                sla_hours=sla,
+                sla_hours=tier_to_sla[tier],
                 region=region,
-                distance_buckets=distance_for_region[region],
-                method=method,
+                distance_buckets=dist,
+                method=ShippingMethod.STANDARD.value,
             )
         )
+        per_order_weights[oid] = TIER_WEIGHT.get(tier, 1.0)
+        if tier == CustomerTier.LOYALTY.value:
+            plan[oid] = {"action_type": ActionType.ASSIGN_WAREHOUSE.value, "warehouse_id": "W1", "quantity": 1}
+            optimal_score += per_order_weights[oid]
+        elif tier == CustomerTier.PREMIUM.value:
+            plan[oid] = {"action_type": ActionType.ASSIGN_WAREHOUSE.value, "warehouse_id": "W2", "quantity": 1}
+            optimal_score += per_order_weights[oid]
+        else:  # standard tier — the order to delay
+            plan[oid] = {"action_type": ActionType.DELAY_ORDER.value, "reason": "stock_insufficient"}
+            infeasible.append(oid)
 
-    plan = _t2_plan(bundle["orders"], bundle["warehouses"], bundle["stock"])
     bundle["ground_truth"] = {
         "kind": "multi_order_triage",
-        "plan": plan["per_order"],
-        "per_order_weights": plan["per_order_weights"],
-        "priority_order": plan["priority_order"],
-        "optimal_service_score": plan["optimal_service_score"],
-        "min_acceptable_service_score": round(plan["optimal_service_score"] * 0.6, 4),
-        "infeasible_orders": plan["infeasible_orders"],
+        "plan": plan,
+        "per_order_weights": per_order_weights,
+        # priority order = served orders first by tier weight, then the delayed one
+        "priority_order": [
+            oid for oid, p in plan.items() if p["action_type"] != ActionType.DELAY_ORDER.value
+        ] + [
+            oid for oid, p in plan.items() if p["action_type"] == ActionType.DELAY_ORDER.value
+        ],
+        "optimal_service_score": round(optimal_score, 4),
+        "min_acceptable_service_score": round(optimal_score * 0.6, 4),
+        "infeasible_orders": infeasible,
         "tier_weight": dict(TIER_WEIGHT),
     }
     bundle["policy_flags"] = {
         "scarcity": True,
-        "demand_exceeds_supply": plan["demand_exceeds_supply"],
+        "demand_exceeds_supply": True,
     }
     return bundle
 
@@ -546,23 +566,39 @@ def _t2_plan(
 
 
 def _build_task_3(seed: int) -> Dict[str, Any]:
-    """Stretch task: keep the shape valid but logic intentionally minimal.
+    """Simplified cascade recovery: a single supplier-failure reroute.
 
-    The headline of the project is T2; T3 exists so the env exposes the
-    right action surface end-to-end. We will flesh this out only if T1 and
-    T2 are fully shipped and there is hackathon time left.
+    Design (intentionally trainable for tiny GRPO budgets):
+      - 1 SKU, 2 warehouses, 1 active order.
+      - W1 has had a supplier failure -> stock = 0.
+      - W2 still has stock -> the only correct move is to reroute O1 to W2.
+      - max_steps = 4. The model needs ONE correct action to win.
+
+    The seed swaps which warehouse failed so the model can't memorise a
+    fixed answer ("always W2"). It must read the stock table.
     """
+    rng = random.Random(seed)
     bundle = _bundle_skeleton("task_3")
+
+    # Pick which warehouse suffered the supplier failure (alternates per seed).
+    failed_wh, healthy_wh = ("W1", "W2") if seed % 2 == 0 else ("W2", "W1")
+
     bundle["warehouses"] = [
-        _wh("W1", "north", [ShippingMethod.STANDARD.value]),
-        _wh("W2", "central", [ShippingMethod.STANDARD.value, ShippingMethod.EXPRESS.value]),
+        _wh("W1", "north",   [ShippingMethod.STANDARD.value]),
+        _wh("W2", "central", [ShippingMethod.STANDARD.value]),
     ]
     bundle["stock"] = [
-        _stock("W1", "SKU-A", 0),
-        _stock("W2", "SKU-A", 2),
-        _stock("W1", "SKU-B", 1),
-        _stock("W2", "SKU-B", 0),
+        _stock(failed_wh,  "SKU-A", 0),
+        _stock(healthy_wh, "SKU-A", 2),
     ]
+
+    # Distance buckets: the failed warehouse looks "nearer" so the agent
+    # has to reason from stock, not from distance alone.
+    if failed_wh == "W1":
+        dist = {"W1": DistanceBucket.NEAR.value, "W2": DistanceBucket.MID.value}
+    else:
+        dist = {"W1": DistanceBucket.MID.value, "W2": DistanceBucket.NEAR.value}
+
     bundle["orders"] = [
         _order(
             order_id="O1",
@@ -571,32 +607,25 @@ def _build_task_3(seed: int) -> Dict[str, Any]:
             tier=CustomerTier.PREMIUM.value,
             sla_hours=18,
             region="central",
-            distance_buckets={"W1": DistanceBucket.MID.value, "W2": DistanceBucket.NEAR.value},
+            distance_buckets=dist,
             method=ShippingMethod.STANDARD.value,
         ),
-        _order(
-            order_id="O2",
-            sku="SKU-B",
-            quantity=1,
-            tier=CustomerTier.LOYALTY.value,
-            sla_hours=8,
-            region="north",
-            distance_buckets={"W1": DistanceBucket.NEAR.value, "W2": DistanceBucket.MID.value},
-            method=ShippingMethod.EXPRESS.value,
-        ),
     ]
+
     bundle["policy_flags"] = {
         "supplier_failure": True,
-        "stretch": True,
-        "failed_supplier_id": "SUP-RED",
+        "failed_warehouse": failed_wh,
+        "failed_supplier_id": "SUP-A",
     }
+    # Use the same "kind" the verifier already understands; the new build is
+    # a clean single-decision reroute task, no escalation/refund required.
     bundle["ground_truth"] = {
-        "kind": "cascade_recovery_stub",
+        "kind": "cascade_recovery_simple",
         "expected_actions": {
-            "O1": {"action_type": ActionType.REROUTE_ORDER.value, "warehouse_id": "W2"},
-            "O2": {"action_type": ActionType.REFUND_OR_COMPENSATE.value, "compensation_type": "credit_25"},
+            "O1": {"action_type": ActionType.REROUTE_ORDER.value, "warehouse_id": healthy_wh},
         },
-        "expected_supplier_escalation": "SUP-RED",
+        "healthy_warehouse": healthy_wh,
+        "failed_warehouse": failed_wh,
     }
     return bundle
 

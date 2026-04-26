@@ -50,6 +50,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import time
 import torch
 import warnings
 import transformers
@@ -58,16 +59,30 @@ from dotenv import load_dotenv
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GPU CHECK — Fail fast on CPU to avoid wasting money on package downloads
+# Retries with delay for H200/H100 where CUDA init can be slow
 # ═══════════════════════════════════════════════════════════════════════════
-if not torch.cuda.is_available():
-    print("❌ ERROR: No GPU detected. This script requires a GPU for training.")
-    print("   HF Jobs flavor must be l4x1, l4x2, a10g, or similar.")
-    print("   Exiting now to avoid unnecessary package installation costs.")
-    sys.exit(1)
+def check_gpu(max_retries=5, delay_sec=2):
+    """Check for GPU with retries. H200/H100 can take time to initialize."""
+    for i in range(max_retries):
+        if torch.cuda.is_available():
+            print(f"✓ GPU detected: {torch.cuda.get_device_name(0)}")
+            print(f"  CUDA version: {torch.version.cuda}")
+            print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            print(f"  Device count: {torch.cuda.device_count()}")
+            if i > 0:
+                print(f"  (detected after {i * delay_sec}s delay)")
+            return True
+        print(f"[{i+1}/{max_retries}] Waiting for GPU initialization... ({delay_sec}s)")
+        time.sleep(delay_sec)
 
-print(f"✓ GPU detected: {torch.cuda.get_device_name(0)}")
-print(f"  CUDA version: {torch.version.cuda}")
-print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB\n")
+    print("❌ ERROR: No GPU detected after waiting.")
+    print("   HF Jobs flavor must be l4x1, l4x2, h200, a10g, or similar.")
+    print("   Exiting now to avoid unnecessary package installation costs.")
+    return False
+
+if not check_gpu():
+    sys.exit(1)
+print()
 
 warnings.filterwarnings("ignore")
 transformers.logging.set_verbosity_error()
@@ -87,17 +102,20 @@ MODEL_NAME       = os.environ["MODEL_NAME"]
 TRAIN_STEPS      = int(os.environ["TRAIN_STEPS"])
 FAST_DEV         = os.environ.get("FAST_DEV", "0") == "1"
 
-EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(8))
-TRAIN_SEEDS     = list(range(8)) if FAST_DEV else list(range(8))
-TRAIN_TASKS     = ["task_2"] if FAST_DEV else ["task_2"]
+EVAL_SEEDS      = [0, 1] if FAST_DEV else list(range(4))
+TRAIN_SEEDS     = list(range(4))
+# Train on all three tasks now that T2/T3 have been simplified to be
+# trainable on a tight budget. T1 stays included so we don't regress on it.
+TRAIN_TASKS     = ["task_1", "task_2", "task_3"]
+EVAL_TASKS      = ["task_1", "task_2", "task_3"]
 
-MAX_SEQ_LEN     = 2048
+MAX_SEQ_LEN     = 1536           # Down from 2048 — observations are smaller now
 LORA_R          = 16
 LORA_ALPHA      = 32
-LR              = 1e-5         # 2× from 5e-6 — KL was 0.012, way too low
-GRPO_N_SAMPLES  = 8            # 2× from 4 — give each group more chances at variance
+LR              = 1e-5
+GRPO_N_SAMPLES  = 6              # Down from 8 — saves ~25% compute per step
 BATCH_SIZE      = 2
-GRPO_TEMP       = 1.2          # > 1.0 forces variance among the N samples per prompt
+GRPO_TEMP       = 1.0            # Lower — sampling variance comes from N samples now
 GRPO_TOP_P      = 0.95
 
 print(f"{'='*62}")
@@ -274,7 +292,7 @@ def _evaluate(model, tokenizer, label: str) -> Dict[str, Any]:
     print(f"\n--- Evaluating [{label}] ---")
     records = []
     first_episode = True
-    for task_id in ["task_1", "task_2"]:
+    for task_id in EVAL_TASKS:
         for seed in EVAL_SEEDS:
             # Debug first episode only to see what the model is generating
             r = _run_episode(model, tokenizer, task_id=task_id, seed=seed, debug=first_episode)
@@ -284,7 +302,7 @@ def _evaluate(model, tokenizer, label: str) -> Dict[str, Any]:
                   f"reward={r['total_reward']:+.3f}  invalid={r['invalid_actions']}")
 
     by_task: Dict[str, Any] = {}
-    for task_id in ["task_1", "task_2"]:
+    for task_id in EVAL_TASKS:
         task_recs = [r for r in records if r["task_id"] == task_id]
         if not task_recs:
             continue
@@ -319,6 +337,12 @@ def _get_oracle_actions(task_id: str, seed: int = 0) -> List[Dict[str, Any]]:
             })
     elif task_id == "task_2":
         for oid, action_info in gt.get("plan", {}).items():
+            act = dict(action_info)
+            act["order_id"] = oid
+            actions.append(act)
+    elif task_id == "task_3":
+        # Single reroute decision per episode for the simplified T3.
+        for oid, action_info in gt.get("expected_actions", {}).items():
             act = dict(action_info)
             act["order_id"] = oid
             actions.append(act)
@@ -403,11 +427,11 @@ def _plot(baseline: Dict[str, Any], trained: Dict[str, Any], path: str) -> None:
         print("matplotlib not available — skipping plot.")
         return
 
-    tasks = ["task_1", "task_2"]
+    tasks = ["task_1", "task_2", "task_3"]
     x = np.arange(len(tasks))
     w = 0.35
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
     # Score comparison bars
     ax = axes[0]
@@ -513,13 +537,13 @@ def main() -> None:
         num_generations=GRPO_N_SAMPLES,
         learning_rate=LR,
         max_prompt_length=1024,
-        max_completion_length=256,
+        # Smaller completion budget — actions are tiny JSON objects (typical
+        # under 80 tokens). Cuts generation time and HF Jobs cost.
+        max_completion_length=96,
         logging_steps=10,
         save_steps=TRAIN_STEPS,
         warmup_steps=10,
         beta=0.01,
-        # Force diversity in the N samples per prompt — last run had
-        # frac_reward_zero_std=0.8, meaning groups had no variance to learn from.
         temperature=GRPO_TEMP,
         top_p=GRPO_TOP_P,
         report_to="none",
@@ -563,7 +587,7 @@ def main() -> None:
     print(f"{'='*54}")
     print(f"{'Task':<12} {'Metric':<20} {'Baseline':>10} {'Trained':>10} {'Delta':>8}")
     print("-" * 62)
-    for task_id in ["task_1", "task_2"]:
+    for task_id in EVAL_TASKS:
         b = baseline_result["by_task"].get(task_id, {})
         t = trained_result["by_task"].get(task_id, {})
         for metric in ("mean_score", "mean_reward", "invalid_rate"):
@@ -616,8 +640,8 @@ def main() -> None:
         else:
             print("\nHF_TOKEN not set — skipping Hub push. Results in /tmp/grpo_output/")
             print(json.dumps({
-                "baseline": {t: baseline_result["by_task"].get(t) for t in ["task_1","task_2"]},
-                "trained":  {t: trained_result["by_task"].get(t)  for t in ["task_1","task_2"]},
+                "baseline": {t: baseline_result["by_task"].get(t) for t in EVAL_TASKS},
+                "trained":  {t: trained_result["by_task"].get(t)  for t in EVAL_TASKS},
             }, indent=2))
 
     print("\nDone.")

@@ -103,7 +103,7 @@ def verify_step(
         signals.update(_step_verify_t1(action_type, warehouse_id, ground_truth))
     elif gt_kind == "multi_order_triage":
         signals.update(_step_verify_t2(action_type, order_id, warehouse_id, action, ground_truth, state_snapshot))
-    elif gt_kind == "cascade_recovery_stub":
+    elif gt_kind in ("cascade_recovery_simple", "cascade_recovery_stub"):
         signals.update(_step_verify_t3(action_type, order_id, warehouse_id, action, ground_truth))
     else:
         # Unknown ground-truth kind — give no bonus, no penalty.
@@ -216,8 +216,16 @@ def _step_verify_t3(
         if not correct_action:
             return {"correct_action_for_entity": False, "state_update_correct": False}
         if action_type == ActionType.REROUTE_ORDER.value:
-            correct_wh = warehouse_id == exp.get("warehouse_id")
-            return {"correct_action_for_entity": True, "state_update_correct": correct_wh}
+            exp_wh = exp.get("warehouse_id") or gt.get("healthy_warehouse")
+            correct_wh = warehouse_id == exp_wh
+            # Partial credit for "tried to reroute" even if the destination
+            # was wrong — keeps the RL gradient alive while the model is
+            # still learning that REROUTE_ORDER is the right verb here.
+            return {
+                "correct_action_for_entity": True,
+                "state_update_correct": correct_wh,
+                "partial_credit": 1.0 if correct_wh else 0.5,
+            }
         if action_type == ActionType.REFUND_OR_COMPENSATE.value:
             correct_comp = action.get("compensation_type") == exp.get("compensation_type")
             return {"correct_action_for_entity": True, "state_update_correct": correct_comp}
@@ -239,7 +247,7 @@ def grade_episode(task_id: str, state: Any) -> Dict[str, Any]:
         return _grade_t1(state, gt)
     if kind == "multi_order_triage":
         return _grade_t2(state, gt)
-    if kind == "cascade_recovery_stub":
+    if kind in ("cascade_recovery_simple", "cascade_recovery_stub"):
         return _grade_t3(state, gt)
 
     # Fallback: task_id-based dispatch for backward compat.
@@ -404,37 +412,81 @@ def _grade_t2(state: Any, gt: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _grade_t3(state: Any, gt: Dict[str, Any]) -> Dict[str, Any]:
-    """Minimal grader for the stretch task stub."""
+    """Cascade-recovery grader.
+
+    For the simplified T3 (single-order reroute under supplier failure):
+      - 1.00 if the order is reassigned to the healthy warehouse.
+      - 0.60 if the order is reassigned somewhere else with stock (it tried).
+      - 0.30 if the order is delayed (acceptable fallback).
+      - 0.01 otherwise.
+
+    The legacy `cascade_recovery_stub` payload (with refund + escalation) is
+    still tolerated so older recordings stay scoreable.
+    """
     orders = _get(state, "orders", [])
     expected_actions = gt.get("expected_actions", {})
+    healthy_wh = gt.get("healthy_warehouse")
     expected_sup = gt.get("expected_supplier_escalation")
 
-    correct = 0
-    total = len(expected_actions) + (1 if expected_sup else 0)
+    if not expected_actions:
+        return {"score": _clamp(0.0), "breakdown": {"error": "no_expected_actions"}}
+
+    per_order: Dict[str, str] = {}
+    achieved = 0.0
 
     for oid, exp in expected_actions.items():
         order = _order_by_id(orders, oid)
         if order is None:
+            per_order[oid] = "missing"
             continue
         status = _get(order, "status", "")
+        assigned = _get(order, "assigned_warehouse")
         exp_type = exp.get("action_type")
+
         if exp_type == ActionType.REROUTE_ORDER.value:
-            exp_wh = exp.get("warehouse_id")
-            if status == OrderStatus.ASSIGNED.value and _get(order, "assigned_warehouse") == exp_wh:
-                correct += 1
+            exp_wh = exp.get("warehouse_id") or healthy_wh
+            if status == OrderStatus.ASSIGNED.value and assigned == exp_wh:
+                per_order[oid] = "perfect_reroute"
+                achieved += 1.0
+            elif status == OrderStatus.ASSIGNED.value and assigned:
+                per_order[oid] = "rerouted_to_wrong_wh"
+                achieved += 0.6
+            elif status == OrderStatus.DELAYED.value:
+                per_order[oid] = "delayed_acceptable_fallback"
+                achieved += 0.3
+            elif status == OrderStatus.CANCELLED.value:
+                per_order[oid] = "refunded_acceptable_fallback"
+                achieved += 0.3
+            else:
+                per_order[oid] = "unresolved"
         elif exp_type == ActionType.REFUND_OR_COMPENSATE.value:
             if status == OrderStatus.CANCELLED.value:
-                correct += 1
+                per_order[oid] = "perfect_refund"
+                achieved += 1.0
+            elif status == OrderStatus.DELAYED.value:
+                per_order[oid] = "delayed_acceptable_fallback"
+                achieved += 0.3
+            else:
+                per_order[oid] = "unresolved"
+        else:
+            per_order[oid] = "unsupported_expected_action"
 
-    # Supplier escalation check comes from state policy_flags.
+    total = float(len(expected_actions))
+    score = achieved / total if total else 0.0
+
+    # Optional supplier-escalation bonus only for the legacy stub task.
     escalated = _get(state, "policy_flags", {}).get("supplier_escalated")
     if expected_sup and escalated == expected_sup:
-        correct += 1
+        score = min(1.0, score + 0.1)
 
-    score = (correct / total) if total else 0.0
     return {
         "score": _clamp(score),
-        "breakdown": {"correct": correct, "total": total},
+        "breakdown": {
+            "achieved": round(achieved, 4),
+            "total": int(total),
+            "per_order": per_order,
+            "healthy_warehouse": healthy_wh,
+        },
     }
 
 
@@ -474,7 +526,7 @@ def is_task_resolved(state: Any) -> bool:
                 return False
         return True
 
-    if kind == "cascade_recovery_stub":
+    if kind in ("cascade_recovery_simple", "cascade_recovery_stub"):
         expected_actions = gt.get("expected_actions", {})
         for oid in expected_actions:
             order = _order_by_id(orders, oid)
