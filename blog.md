@@ -77,6 +77,11 @@ The whole project is open under MIT. If you want to poke at it:
 - **Training notebook (Colab)**: [colab.research.google.com/drive/1zsdtNfhN8_pstougqh66K8bMmSRaeZrZ](https://colab.research.google.com/drive/1zsdtNfhN8_pstougqh66K8bMmSRaeZrZ?usp=sharing)
 - **GitHub repo**: [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter)
 
+If you want to look at the two files that matter most:
+
+- The **environment** lives in [`environment.py`](https://github.com/Dhruv-80/ecommerce-ops-env-starter/blob/main/environment.py). That's the `reset / step / final_score` loop — every action the model takes runs through here, gets schema-validated, mutates state under the anti-hacking guards, and produces the next observation and reward.
+- The **training script** lives in [`train/hf_train.py`](https://github.com/Dhruv-80/ecommerce-ops-env-starter/blob/main/train/hf_train.py) (and the same code lives in the Colab notebook). It wires the environment up to GRPO via Hugging Face TRL, runs the baseline eval, trains the LoRA adapters, runs the post-training eval, and pushes the trained model and `results.json` + `reward_curves.png` to the two HF repos linked above.
+
 The Colab notebook captures the full run end-to-end — baseline eval, training loop, post-training eval, and the before/after comparison — and you can re-run it on a single GPU.
 
 ---
