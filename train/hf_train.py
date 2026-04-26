@@ -22,15 +22,15 @@ Pushes the trained model, eval results JSON, and reward curve PNG to Hub.
 
 Env vars (pass as secrets / env in hf_jobs()):
   HF_TOKEN          required — write token to push results
-  HUB_MODEL_REPO    e.g. "YOUR_USERNAME/ecommerce-ops-grpo"
-  HUB_RESULTS_REPO  e.g. "YOUR_USERNAME/ecommerce-ops-results"
+  HUB_MODEL_REPO    e.g. "Gloomytarsier3/ecommerce-ops-grpo"
+  HUB_RESULTS_REPO  e.g. "Gloomytarsier3/ecommerce-ops-results"
   MODEL_NAME        base model (default: Qwen/Qwen2.5-1.5B-Instruct)
   TRAIN_STEPS       int, default 80
   FAST_DEV          "1" to run with 2 eval seeds (smoke test)
 
 Submission repos:
-  model:   https://huggingface.co/TenduL/ecommerce-ops-grpo
-  results: https://huggingface.co/datasets/TenduL/ecommerce-ops-results
+  model:   https://huggingface.co/Gloomytarsier3/ecommerce-ops-grpo
+  results: https://huggingface.co/datasets/Gloomytarsier3/ecommerce-ops-results
 
 Usage (from CLI after hf login):
   hf jobs uv run train/hf_train.py \\
@@ -38,8 +38,8 @@ Usage (from CLI after hf login):
     --timeout 2h \\
     --env TRAIN_STEPS=80 \\
     --secret HF_TOKEN=$HF_TOKEN \\
-    --env HUB_MODEL_REPO=YOUR_USERNAME/ecommerce-ops-grpo \\
-    --env HUB_RESULTS_REPO=YOUR_USERNAME/ecommerce-ops-results
+    --env HUB_MODEL_REPO=Gloomytarsier3/ecommerce-ops-grpo \\
+    --env HUB_RESULTS_REPO=Gloomytarsier3/ecommerce-ops-results
 """
 
 from __future__ import annotations

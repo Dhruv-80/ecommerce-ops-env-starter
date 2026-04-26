@@ -1,144 +1,83 @@
-# CommerceOps-Env: Training LLMs for E-Commerce Fulfillment Decisions
+# Teaching an LLM to Run a Fulfillment Desk
 
-## The Problem
+If you've ever watched an operations manager triage orders during a supplier outage, you'll know the job isn't really about following a rulebook. It's about reading a messy situation — three orders, two warehouses, half the inventory you expected — and making a call that keeps the most important customers happy without breaking promises you've already made.
 
-When an order arrives on an e-commerce platform, an operations manager has to decide:
+That's the role we tried to give a language model.
 
-- Which warehouse ships it?
-- Should we split a single order across multiple warehouses?
-- Should we delay an order if stock is low?
-- If a supplier fails, who gets rerouted, who gets compensated?
+## The Setup
 
-These decisions trade off **customer tier**, **SLA deadlines**, **inventory scarcity**, and **shipping distance** — they're hard to encode as a clean rules engine. Human fulfillment managers make these judgment calls every day. Can an LLM learn to make similar ones from reward signal alone?
+CommerceOps-Env is a small e-commerce world the model can act inside. Every episode it sees a snapshot — the open orders, what's sitting in each warehouse, who the customer is, how long until the SLA clock runs out — and it picks one structured action. Assign a warehouse. Split a shipment across two. Delay an order. Reroute when something fails upstream. That's it.
 
-## The Environment
+The model never gets to "explain" itself out of a bad outcome. The environment grades it from state alone. If an order ends the episode in the wrong status, the score reflects that.
 
-CommerceOps-Env is an OpenEnv-compatible reinforcement learning environment that simulates e-commerce fulfillment operations. The agent receives structured observations (orders, warehouses, stock cells, distance buckets, SLAs, allowed actions) and outputs a single structured JSON action per step:
+We give it three jobs:
 
-```json
-{"action_type": "assign_warehouse", "order_id": "O1", "warehouse_id": "W2"}
-{"action_type": "split_shipment",   "order_id": "O3", "allocations": [{"warehouse_id": "W1", "quantity": 1}, {"warehouse_id": "W2", "quantity": 1}]}
-{"action_type": "delay_order",      "order_id": "O5", "reason": "stock_insufficient"}
-{"action_type": "reroute_order",    "order_id": "O1", "warehouse_id": "W2"}
-{"action_type": "noop"}
-```
+**Warehouse assignment.** One order, three warehouses. Send it to the closest one that has stock and supports the requested shipping method. It's the kind of decision that looks trivial until you notice the closest warehouse doesn't carry the SKU.
 
-Schema validation is performed by Pydantic v2 inside the environment, before any state mutation. Anything that doesn't match the per-task whitelist gets a flat invalid-action penalty.
+**Multi-order triage.** Two orders showing up at the same time, one SKU, two warehouses with one unit each, and competing customer tiers. There's a clear right answer here — each order has a "near" warehouse — but the catch is that picking the wrong one consumes the only inventory available and leaves the other order stranded. A loyalty customer waiting on a delayed shipment is the worst possible outcome, so tier matters when it goes wrong.
 
-### Three Tasks
+**Cascade recovery.** A supplier failure has zeroed out stock at one warehouse. There's a pending order that was always going to ship from somewhere — now the model has to recognise the broken state and reroute. It's the situation that breaks rule engines: the "right" answer changes the moment the world changes.
 
-| Task | Name | Setup | Decision |
-|------|------|-------|----------|
-| `task_1` | Warehouse Assignment | 1 order, 3 warehouses | Pick the closest valid warehouse with stock |
-| `task_2` | Multi-Order Triage | 2 orders, 1 SKU, 2 warehouses (1 unit each) | Assign each order to its NEAR warehouse — wasting W1 on the wrong order leaves the other unfilled |
-| `task_3` | Cascade Recovery | 1 active order, 2 warehouses, supplier failure has zeroed stock at one WH | Reroute the order to the warehouse that still has stock |
+## Why This Isn't a Chatbot
 
-The scenarios are deterministic given `(task_id, seed)`, but the seed permutes which order gets each tier (T2) and which warehouse failed (T3), so the agent can't memorize fixed answers.
+A lot of LLM demos are really just prompt engineering with a clever wrapper. We wanted this to feel like an actual operating environment. So:
 
-## Environment Design
+- The action space is a fixed JSON schema. The model can't make up an action verb. It can't sneak natural language into a field. If it tries, the request is rejected and a small penalty applies.
+- Inventory is protected. Only the environment can decrement stock — the model has no path to mutate state directly. There's no way to "fake" fulfillment.
+- The grader looks at the world, not at the model's reasoning. It doesn't care how the order got assigned, only whether the order ended up in the right place.
+- Repeat actions get penalised. Hammering the same order with the same verb to farm reward gets you nowhere.
 
-The environment is built around four design principles:
+These are small things, but they're what make the reward signal honest. You can't game your way to a high score by being verbose or persuasive.
 
-1. **Stateful** — actions change inventory, order status, and step count. The model is never allowed to mutate state directly; only verified actions through `EnvAction` schemas can.
-2. **Verifiable** — success is decided from environment state and explicit business rules, not from model explanations.
-3. **Trainable** — early tasks produce non-zero reward often enough that GRPO has signal to climb.
-4. **Hard to game** — anti-hacking checks include action whitelisting, strict per-action schema validation, protected stock counters, max-step timeouts, repeat-action detection, and collateral-damage flags.
+## What the Baseline Could and Couldn't Do
 
-## Training Approach
+When we ran a frozen Qwen2.5-1.5B against the environment without any training, the picture wasn't uniform.
 
-We use **GRPO (Group Relative Policy Optimization)** via Hugging Face TRL.
+It was already pretty competent at the multi-order triage task — averaging 0.81 across four eval seeds. Distance buckets are intuitive: if an order is "near" warehouse W2, the model picks W2. That alone gets you most of the way on a clean two-order scenario, and the baseline reflected that.
 
-### 1. Few-Shot JSON Examples in the System Prompt
+The single-order assignment task was a different story. Mean score 0.55, with an invalid-action rate above 57%. The model would sometimes pick a warehouse that didn't actually carry the SKU, or it would generate an action with a malformed field that bounced off the schema validator entirely. Format compliance was the bottleneck more than judgment.
 
-Instead of abstract instructions, the prompt shows concrete JSON examples for each action type. Format priming brings valid-action rates from ~60% to ~95% on the frozen baseline.
+And on the cascade recovery task, the baseline simply didn't know what to do. It hadn't seen the `reroute_order` verb in any meaningful way during pretraining, so it would emit invalid actions and time out the episode. Mean score 0.01. Invalid-action rate 100%. Across every seed.
 
-### 2. Fast-Forwarded Training States
+That's the kind of split you actually want before training. There's a clear gap to close on two of the three tasks, and a steady performance on the third that you don't want to destroy in the process.
 
-For T2, the agent needs to act at multiple mid-episode states (after order 1 is assigned, then after order 2 is assigned, etc.). We replay oracle actions to fast-forward the env, then sample the model on the resulting observation. This gives diverse training prompts without per-rollout variance.
+## What Training Actually Did
 
-### 3. Single-Step Reward
+We used GRPO — group-relative policy optimisation — with LoRA adapters on top of the base model. The reward function is layered: a small bonus for outputting valid JSON, more for picking the right entity, more for using the right verb, and the largest share for the final state matching what a sensible plan would have produced. Penalties show up for repeating actions, going over the step budget, and causing collateral damage like assigning to a warehouse that's already empty.
 
-The GRPO reward function applies the model's action to the fast-forwarded state and returns the immediate environment reward. This gives a stable, dense per-step signal that's easy for GRPO group-relative advantages to consume.
+We deliberately train on all three tasks together rather than one at a time. The reasoning is practical: if you only train on the headline task, the model forgets the others. Mixing them keeps the things the baseline already does well from regressing while the harder tasks catch up.
 
-### 4. Layered Reward Shaping
+The shape of the training run matched the hypothesis. Reward climbed steadily, format compliance jumped from "sometimes" to "always", and the model picked up the new verbs quickly because the per-step gradient is dense — getting the verb right is worth real reward even before the warehouse choice settles. Eighty steps in, training loss settled around 0.012.
 
-The env's reward layer (`reward.py`) breaks per-step reward into:
+## What Changed After Training
 
-| Component | Value |
-|-----------|-------|
-| Schema compliance | +0.10 |
-| Correct entity targeted | +0.20 |
-| Correct action type for that entity | +0.30 |
-| State update matches ground truth | +0.40 (× partial credit if close-but-wrong) |
-| Repeat action | −0.10 |
-| Step penalty | −0.05 |
-| Collateral damage (e.g. assign infeasible) | −0.20 |
-| Invalid action (failed schema) | −0.35 |
+The numbers came back the way we'd hoped:
 
-T3's step verifier returns `partial_credit=0.5` when the model picks the right verb (`reroute_order`) but the wrong warehouse — so "tried to reroute to W1 when W2 was healthy" still earns +0.45 step reward instead of zero. That keeps the gradient dense at the boundary between right verb and right target.
+- **Single-order assignment** went from 0.55 to 0.795 mean score. The 57% invalid-action rate dropped to zero. Format errors went away, and the model started picking warehouses that actually carry the SKU and support the shipping method.
+- **Cascade recovery** — which the baseline completely failed at — moved from 0.01 to 0.50. The 100% invalid-action rate dropped to zero. The model learned that a supplier failure means reroute, and it learned to read the stock table to figure out where to reroute *to*.
+- **Multi-order triage** held its ground at 0.81. The competence the baseline already had didn't get washed out by training pressure on the other two tasks.
 
-## Model and Compute
+That last point matters more than it might sound. A common failure mode in multi-task RL is that gains on the hard tasks come at the cost of the easy ones. We didn't see that here. The mix of fast-forwarded states and dense per-step rewards seems to keep the model from overfitting to any single task's reward shape.
 
-- **Base model**: Qwen2.5-1.5B-Instruct
-- **Fine-tuning**: LoRA adapters (r=16, alpha=32) via Unsloth 4-bit
-- **GRPO**: 80 steps, group size 6, temperature 1.0, top_p 0.95, β=0.01
-- **Hardware**: NVIDIA L4 / H200 (HF Jobs)
+## Why Any of This Matters
 
-A GPU pre-flight check at the very top of `hf_train.py` exits before any heavy imports if CUDA isn't available, with retries for cold-init on H200 / H100 nodes.
+The honest answer is that operations work doesn't reduce neatly to rules. The decisions an experienced fulfillment manager makes — which order to delay when stock is short, when to absorb a shipping cost to keep a tier-1 customer happy, when to escalate versus when to wait — are judgment calls. They're learned from many small situations, and they don't compress into a flowchart.
 
-## Results
+If language models are going to be useful inside operational software (and not just sitting next to it answering questions), they need to act inside environments where the consequences are real and the rewards reflect business outcomes. That's the experiment this is. Not "can the model talk about fulfillment", but "can the model do fulfillment, badly at first, and get better".
 
-### Per-task scores
+The early answer is yes — at least at this scale, in this kind of environment, with this style of training. The harder question, which we're not pretending to answer here, is what happens when you scale the world up and the exceptions get weirder.
 
-| Task | Random | Frozen Qwen2.5-1.5B | Trained (GRPO 80 steps) | Oracle |
-|------|--------|--------------------|-----------------------|--------|
-| task_1 | 0.53 | *baseline-eval* | *post-train-eval* | 0.99 |
-| task_2 | 0.41 | *baseline-eval* | *post-train-eval* | 0.99 |
-| task_3 | 0.30 | *baseline-eval* | *post-train-eval* | 0.99 |
+## Try It
 
-Live numbers (mean score / mean reward / invalid rate per task) — plus the full GRPO log history and `reward_curves.png` — are written to [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results) at the end of every training run.
+The whole project is open under MIT. If you want to poke at it:
 
-### Cumulative reward on perfect play (sanity check)
+- **Trained model**: [huggingface.co/Gloomytarsier3/ecommerce-ops-grpo](https://huggingface.co/Gloomytarsier3/ecommerce-ops-grpo)
+- **Training results & logs**: [huggingface.co/datasets/Gloomytarsier3/ecommerce-ops-results](https://huggingface.co/datasets/Gloomytarsier3/ecommerce-ops-results)
+- **Live OpenEnv space**: [huggingface.co/spaces/Gloomytarsier3/e-com-r2](https://huggingface.co/spaces/Gloomytarsier3/e-com-r2)
+- **Training notebook (Colab)**: [colab.research.google.com/drive/1zsdtNfhN8_pstougqh66K8bMmSRaeZrZ](https://colab.research.google.com/drive/1zsdtNfhN8_pstougqh66K8bMmSRaeZrZ?usp=sharing)
+- **GitHub repo**: [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter)
 
-Running the oracle plan deterministically against the env:
-
-```
-TASK 1 OPTIMAL  score=0.99  cum_reward=+0.95   steps=1
-TASK 2 OPTIMAL  score=0.99  cum_reward=+1.90   steps=2
-TASK 3 OPTIMAL  score=0.99  cum_reward=+0.95   steps=1
-
-TASK 2 ALL-NOOP score=0.01  cum_reward=-0.10
-TASK 3 ALL-NOOP score=0.01  cum_reward=-0.10
-```
-
-The reward delta between optimal and all-noop policies is large enough to give GRPO group-relative advantages clean variance to learn from.
-
-## Reproducibility
-
-All code, environment definitions, and results are public:
-
-- **GitHub**: [github.com/Dhruv-80/ecommerce-ops-env-starter](https://github.com/Dhruv-80/ecommerce-ops-env-starter)
-- **Trained model**: [huggingface.co/TenduL/ecommerce-ops-grpo](https://huggingface.co/TenduL/ecommerce-ops-grpo)
-- **Training results / logs**: [huggingface.co/datasets/TenduL/ecommerce-ops-results](https://huggingface.co/datasets/TenduL/ecommerce-ops-results)
-- **Live OpenEnv space**: [huggingface.co/spaces/YOUR_SPACE](https://huggingface.co/spaces/YOUR_SPACE)
-
-To reproduce:
-
-```bash
-# Local smoke test
-pip install -r requirements.txt
-uvicorn server.app:app --host 0.0.0.0 --port 7860
-pytest tests/test_env.py -q
-
-# HF Jobs training run (uses values from .env)
-bash train/run_hf_job.sh
-```
-
-Or open `train/hf_train.ipynb` in Colab on a T4 / L4 GPU and run all cells.
-
-## Conclusion
-
-CommerceOps-Env demonstrates that an LLM can learn structured fulfillment decisions under realistic constraints from environment reward alone. The environment, training script, and a runnable Jupyter notebook are all open under MIT license.
+The Colab notebook captures the full run end-to-end — baseline eval, training loop, post-training eval, and the before/after comparison — and you can re-run it on a single GPU.
 
 ---
 
