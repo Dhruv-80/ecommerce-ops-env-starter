@@ -53,12 +53,12 @@ TASK_CATALOG: Dict[str, Dict[str, Any]] = {
         "task_type": TaskType.T2_MULTI_ORDER_TRIAGE.value,
         "name": "Multi-Order Fulfillment Triage",
         "difficulty": "medium",
-        "max_steps": 5,
+        "max_steps": 4,
         "description": (
-            "Three orders compete for limited stock across two warehouses. "
-            "Total stock < total demand, so one order MUST be delayed. "
-            "Pick the lowest-tier order to delay; assign the other two to "
-            "their nearest stocked warehouse."
+            "Two orders, one SKU, two warehouses with one unit each. "
+            "Pick the correct warehouse for each order based on its "
+            "destination region (NEAR > MID). Wasting the only stocked "
+            "warehouse on the wrong order leaves the other order unfilled."
         ),
     },
     "task_3": {
@@ -337,108 +337,102 @@ def _t1_best_warehouse(
 
 
 def _build_task_2(seed: int) -> Dict[str, Any]:
-    """Simplified multi-order triage: 3 orders, 1 SKU, 2 warehouses.
+    """Simplified multi-order triage: 2 orders, 1 SKU, 2 warehouses.
 
-    Design (intentionally trainable for tiny GRPO budgets):
-      - 3 orders all want the same SKU, all standard shipping.
-      - Total stock = 2 (W1=1, W2=1) so demand (3) > supply (2) and exactly
-        one order MUST be delayed.
-      - Tiers are always {LOYALTY, PREMIUM, STANDARD} (one of each), so the
-        STANDARD-tier order is the unambiguous "delay" choice.
-      - Each order has a different destination region, so its nearest
-        warehouse is also unambiguous (LOYALTY is near W1, PREMIUM is near
-        W2, STANDARD would have been near whichever has stock left, but it
-        gets delayed anyway).
-      - max_steps = 5 keeps the trajectory short; the model needs only 3
-        decisions to clear the episode.
+    Design rationale (after the 3-order-with-DELAY version trained to a
+    degenerate "delay everything" policy):
 
-    The seed only permutes which order_id (O1/O2/O3) gets each tier so the
-    agent can't memorise "always delay O3".
+      - 2 orders, 1 SKU, 2 warehouses with 1 unit of stock each.
+        Total supply (2) == total demand (2) — no order needs to be delayed,
+        but the only correct play is to send EACH order to its nearer
+        warehouse. Wasting the only-stocked warehouse on the wrong order
+        leaves the other order with no inventory to serve.
+
+      - Both expected actions are ASSIGN_WAREHOUSE. There is no order whose
+        plan calls for DELAY, so a "delay everything" policy can no longer
+        farm step rewards.
+
+      - One order has its destination in "north" (W1 is NEAR), the other in
+        "central" (W2 is NEAR). Tier weights still differ (LOYALTY > PREMIUM)
+        so wrong assignments are not symmetric.
+
+      - max_steps = 4 leaves a 2-step retry buffer beyond the 2-step
+        oracle plan.
+
+    The seed permutes which order_id is which (O1 vs O2 carries each tier),
+    so the model cannot memorise "always assign O1 to W1".
     """
     rng = random.Random(seed)
     bundle = _bundle_skeleton("task_2")
 
-    # Two simple warehouses, both standard-capable. No express — keeps the
-    # decision purely about distance + scarcity.
     bundle["warehouses"] = [
-        _wh("W1", "north", [ShippingMethod.STANDARD.value]),
+        _wh("W1", "north",   [ShippingMethod.STANDARD.value]),
         _wh("W2", "central", [ShippingMethod.STANDARD.value]),
     ]
 
-    # Single SKU, exactly 1 unit per warehouse. Demand 3 > supply 2.
+    # 1 unit of SKU-A at each warehouse. Demand == supply.
     bundle["stock"] = [
         _stock("W1", "SKU-A", 1),
         _stock("W2", "SKU-A", 1),
     ]
 
-    # Three orders, one of each tier. Region is fixed per tier so the
-    # "right" warehouse is unambiguous.
-    #   loyalty -> region "north"   -> W1 is NEAR (best fit)
-    #   premium -> region "central" -> W2 is NEAR (best fit)
-    #   standard -> region "south"  -> both FAR; gets delayed anyway
-    tier_to_region = {
-        CustomerTier.LOYALTY.value:  ("north",   {"W1": DistanceBucket.NEAR.value, "W2": DistanceBucket.MID.value}),
-        CustomerTier.PREMIUM.value:  ("central", {"W1": DistanceBucket.MID.value,  "W2": DistanceBucket.NEAR.value}),
-        CustomerTier.STANDARD.value: ("south",   {"W1": DistanceBucket.FAR.value,  "W2": DistanceBucket.FAR.value}),
-    }
-    tier_to_sla = {
-        CustomerTier.LOYALTY.value:  12,
-        CustomerTier.PREMIUM.value:  24,
-        CustomerTier.STANDARD.value: 48,
-    }
-
-    order_ids = ["O1", "O2", "O3"]
-    tiers = [CustomerTier.LOYALTY.value, CustomerTier.PREMIUM.value, CustomerTier.STANDARD.value]
+    order_ids = ["O1", "O2"]
     rng.shuffle(order_ids)
+    o_north_id, o_central_id = order_ids[0], order_ids[1]
 
-    plan: Dict[str, Dict[str, Any]] = {}
-    per_order_weights: Dict[str, float] = {}
-    infeasible: List[str] = []
-    optimal_score = 0.0
+    bundle["orders"] = [
+        _order(
+            order_id=o_north_id,
+            sku="SKU-A",
+            quantity=1,
+            tier=CustomerTier.LOYALTY.value,
+            sla_hours=12,
+            region="north",
+            distance_buckets={
+                "W1": DistanceBucket.NEAR.value,
+                "W2": DistanceBucket.MID.value,
+            },
+            method=ShippingMethod.STANDARD.value,
+        ),
+        _order(
+            order_id=o_central_id,
+            sku="SKU-A",
+            quantity=1,
+            tier=CustomerTier.PREMIUM.value,
+            sla_hours=24,
+            region="central",
+            distance_buckets={
+                "W1": DistanceBucket.MID.value,
+                "W2": DistanceBucket.NEAR.value,
+            },
+            method=ShippingMethod.STANDARD.value,
+        ),
+    ]
 
-    for oid, tier in zip(order_ids, tiers):
-        region, dist = tier_to_region[tier]
-        bundle["orders"].append(
-            _order(
-                order_id=oid,
-                sku="SKU-A",
-                quantity=1,
-                tier=tier,
-                sla_hours=tier_to_sla[tier],
-                region=region,
-                distance_buckets=dist,
-                method=ShippingMethod.STANDARD.value,
-            )
-        )
-        per_order_weights[oid] = TIER_WEIGHT.get(tier, 1.0)
-        if tier == CustomerTier.LOYALTY.value:
-            plan[oid] = {"action_type": ActionType.ASSIGN_WAREHOUSE.value, "warehouse_id": "W1", "quantity": 1}
-            optimal_score += per_order_weights[oid]
-        elif tier == CustomerTier.PREMIUM.value:
-            plan[oid] = {"action_type": ActionType.ASSIGN_WAREHOUSE.value, "warehouse_id": "W2", "quantity": 1}
-            optimal_score += per_order_weights[oid]
-        else:  # standard tier — the order to delay
-            plan[oid] = {"action_type": ActionType.DELAY_ORDER.value, "reason": "stock_insufficient"}
-            infeasible.append(oid)
+    plan: Dict[str, Dict[str, Any]] = {
+        o_north_id:   {"action_type": ActionType.ASSIGN_WAREHOUSE.value, "warehouse_id": "W1", "quantity": 1},
+        o_central_id: {"action_type": ActionType.ASSIGN_WAREHOUSE.value, "warehouse_id": "W2", "quantity": 1},
+    }
+    per_order_weights: Dict[str, float] = {
+        o_north_id:   TIER_WEIGHT[CustomerTier.LOYALTY.value],   # 2.0
+        o_central_id: TIER_WEIGHT[CustomerTier.PREMIUM.value],   # 1.5
+    }
+    optimal_score = sum(per_order_weights.values())  # 3.5
 
     bundle["ground_truth"] = {
         "kind": "multi_order_triage",
         "plan": plan,
         "per_order_weights": per_order_weights,
-        # priority order = served orders first by tier weight, then the delayed one
-        "priority_order": [
-            oid for oid, p in plan.items() if p["action_type"] != ActionType.DELAY_ORDER.value
-        ] + [
-            oid for oid, p in plan.items() if p["action_type"] == ActionType.DELAY_ORDER.value
-        ],
+        # priority by tier weight: LOYALTY first, then PREMIUM
+        "priority_order": [o_north_id, o_central_id],
         "optimal_service_score": round(optimal_score, 4),
         "min_acceptable_service_score": round(optimal_score * 0.6, 4),
-        "infeasible_orders": infeasible,
+        "infeasible_orders": [],
         "tier_weight": dict(TIER_WEIGHT),
     }
     bundle["policy_flags"] = {
-        "scarcity": True,
-        "demand_exceeds_supply": True,
+        "scarcity": True,            # per-warehouse, not aggregate
+        "demand_exceeds_supply": False,  # demand == supply
     }
     return bundle
 

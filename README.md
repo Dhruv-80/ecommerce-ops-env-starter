@@ -60,7 +60,7 @@ A stateful, OpenEnv-compatible RL environment where a language model acts as a f
 | Task | Name | Difficulty | Purpose |
 |------|------|----------|---------|
 | `task_1` | Warehouse Assignment | Easy | Bootstrap — single order, pick the best warehouse. Gets the model format-compliant early in training. |
-| `task_2` | Multi-Order Fulfillment Triage | Medium | **Headline task.** Three orders, one SKU, two warehouses, total stock < total demand. Assign the loyalty/premium orders to their nearest stocked warehouse and delay the standard-tier order. |
+| `task_2` | Multi-Order Fulfillment Triage | Medium | **Headline task.** Two orders, one SKU, two warehouses with one unit each. Assign each order to its NEAR warehouse — if you waste W1 on the wrong order, the other order can't be served. |
 | `task_3` | Cascade Recovery | Medium | A supplier failure has zeroed stock at one warehouse. Reroute the pending order to the warehouse that still has stock. |
 
 ---
@@ -210,7 +210,7 @@ HF_TIMEOUT=2h
 | Task | Mean Score | Cumulative Reward | Steps |
 |------|------------|-------------------|-------|
 | task_1 | 0.99 | +0.95 | 1 |
-| task_2 | 0.99 | +2.85 | 3 |
+| task_2 | 0.99 | +1.90 | 2 |
 | task_3 | 0.99 | +0.95 | 1 |
 
 ### Trivial All-Noop Policy (Lower Bound)
@@ -218,8 +218,20 @@ HF_TIMEOUT=2h
 | Task | Mean Score | Cumulative Reward |
 |------|------------|-------------------|
 | task_1 | 0.01 | -0.10 |
-| task_2 | 0.01 | -0.15 |
+| task_2 | 0.01 | -0.10 |
 | task_3 | 0.01 | -0.10 |
+
+### Latest GRPO Run (Qwen2.5-1.5B-Instruct, 80 steps)
+
+Pulled from [`results.json`](https://huggingface.co/datasets/TenduL/ecommerce-ops-results/blob/main/results.json):
+
+| Task | Baseline | Trained | Δ |
+|------|---------:|--------:|--:|
+| task_1 mean_score | 0.55 | 0.99 | **+0.44** |
+| task_1 invalid_rate | 0.57 | 0.00 | **−0.57** |
+| task_3 mean_score | 0.01 | 0.50 | **+0.49** |
+| task_3 invalid_rate | 1.00 | 0.00 | **−1.00** |
+| task_2 (re-scoped) | TBD | TBD | (pending re-run with new T2 design) |
 
 The reward delta between optimal and noop is **~3.0 on T2** and **~1.05 on T1/T3** — large enough that GRPO group-relative advantages are non-degenerate.
 

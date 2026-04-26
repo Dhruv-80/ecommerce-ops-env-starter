@@ -32,7 +32,7 @@ The headline lesson of this hackathon: **the right scope is the one your trainin
 | Task | Name | Setup | Decision |
 |------|------|-------|----------|
 | `task_1` | Warehouse Assignment | 1 order, 3 warehouses | Pick the closest valid warehouse with stock |
-| `task_2` | Multi-Order Triage | 3 orders, 1 SKU, 2 warehouses, total stock < demand | Assign loyalty/premium to nearest stocked WH; delay the standard-tier order |
+| `task_2` | Multi-Order Triage | 2 orders, 1 SKU, 2 warehouses (1 unit each), demand == supply | Assign each order to its NEAR warehouse — wasting W1 on the wrong order leaves the other unfilled |
 | `task_3` | Cascade Recovery | 1 active order, 2 warehouses, supplier failure has zeroed stock at one WH | Reroute the order to the warehouse that still has stock |
 
 The scenarios are deterministic given `(task_id, seed)`, but the seed permutes which order gets each tier (T2) and which warehouse failed (T3), so the agent can't memorize "always pick W2."
@@ -49,7 +49,19 @@ The fix:
 - **T3 → a single-decision reroute under supplier failure.** Same shape as T1, just a different verb. The model bootstraps in a few steps.
 - **Train all three tasks together.** T1 keeps format compliance high, T2 forces tier reasoning, T3 forces stock-aware rerouting.
 
-After re-scoping, optimal play scores **0.99** on every task with cumulative rewards **+0.95 / +2.85 / +0.95** for T1 / T2 / T3 respectively — and "all-noop" scores **0.01** with negative cumulative reward. That's the dense, monotonic gradient GRPO actually needs.
+### A second iteration on T2: closing the "delay everything" trap
+
+The first re-scoped T2 still had a degenerate optimum the GRPO model converged on: it learned to pick `delay_order` for the standard-tier order **five times in a row**, farming step rewards (+0.95 + 4×0.85 = +4.35) without ever assigning the loyalty/premium orders. Final episode score: 0.01.
+
+Why? At the per-step verifier, picking `delay_order` for the order whose plan said "delay" got full credit *every step*, even when that order was already in `DELAYED` status. The GRPO single-step reward function couldn't see the episode-level failure.
+
+The second-iteration fix removes the `DELAY` action from the plan entirely:
+
+- **T2 v2 → 2 orders, 1 SKU, 2 warehouses, 1 unit each.** Both expected actions are `assign_warehouse`. Demand equals supply, but the only correct play sends each order to its NEAR warehouse — if you waste W1 on the wrong order, the other order can't be served.
+- The "always DELAY" trap is no longer reachable because no order's plan calls for delay.
+- Single-step reward at any fast-forward state now strongly prefers ASSIGN (+0.95) over DELAY (+0.25) over NOOP (+0.05), with partial credit (+0.65) for ASSIGN to the wrong warehouse.
+
+After this fix, optimal play scores **0.99** on every task with cumulative rewards **+0.95 / +1.90 / +0.95** for T1 / T2 / T3 respectively. The previous T2 trap (always-DELAY) now only earns +0.70 cumulative reward and final score 0.01 — a clear loss versus oracle's +1.90.
 
 ## Training Approach: GRPO with Fast-Forwarded States
 
