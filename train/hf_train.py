@@ -56,6 +56,19 @@ import transformers
 from huggingface_hub import HfApi, login
 from dotenv import load_dotenv
 
+# ═══════════════════════════════════════════════════════════════════════════
+# GPU CHECK — Fail fast on CPU to avoid wasting money on package downloads
+# ═══════════════════════════════════════════════════════════════════════════
+if not torch.cuda.is_available():
+    print("❌ ERROR: No GPU detected. This script requires a GPU for training.")
+    print("   HF Jobs flavor must be l4x1, l4x2, a10g, or similar.")
+    print("   Exiting now to avoid unnecessary package installation costs.")
+    sys.exit(1)
+
+print(f"✓ GPU detected: {torch.cuda.get_device_name(0)}")
+print(f"  CUDA version: {torch.version.cuda}")
+print(f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB\n")
+
 warnings.filterwarnings("ignore")
 transformers.logging.set_verbosity_error()
 
@@ -312,77 +325,43 @@ def _get_oracle_actions(task_id: str, seed: int = 0) -> List[Dict[str, Any]]:
     return actions
 
 
-# Module-level handles to the trainable model + tokenizer. Set in main()
-# right before GRPO so the reward fn can reach them for the rollout. We use
-# globals because TRL's reward_funcs signature is fixed (prompts, completions,
-# **kwargs) — there's nowhere clean to thread the model through.
-_GLOBAL_MODEL = None
-_GLOBAL_TOKENIZER = None
-
-
-@torch.no_grad()
-def _greedy_action(model, tokenizer, obs) -> Dict[str, Any]:
-    """One greedy rollout step. No grad, no sampling — just the model's
-    best guess at the next action given the current observation.
-    """
-    msgs = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user",   "content": _obs_to_text(obs)},
-    ]
-    enc = tokenizer.apply_chat_template(
-        msgs, tokenize=True, add_generation_prompt=True,
-        return_tensors="pt", return_dict=True,
-    )
-    enc = {k: v.to(model.device) for k, v in enc.items()}
-    input_len = enc["input_ids"].shape[-1]
-    out = model.generate(
-        **enc, max_new_tokens=128, do_sample=False,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-    raw = tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
-    return _extract_action(raw)
-
-
 def grpo_reward_fn(
     prompts: List[str],
     completions: List[str],
     **kwargs,
 ) -> List[float]:
-    """Multi-step rollout reward starting from a fast-forwarded state.
-    Evaluates how good the chosen action is for the *final* episode score."""
+    """Single-step reward with fast-forwarded state.
+
+    For each (prompt, completion) pair:
+      1. Reset env to (task_id, seed)
+      2. Fast-forward ff_steps using oracle actions
+      3. Apply the model's action
+      4. Return env.reward (immediate feedback)
+
+    Why: Multi-step rollout was crashing (all -0.5 rewards). Single-step
+    gives stable learning signal. Task diversity from ff_steps provides
+    enough coverage for the model to learn the full trajectory.
+    """
     task_ids = kwargs.get("task_id", ["task_1"] * len(completions))
     seeds    = kwargs.get("seed",    [0]        * len(completions))
     ff_steps = kwargs.get("ff_steps", [0]       * len(completions))
-    
-    model     = _GLOBAL_MODEL
-    tokenizer = _GLOBAL_TOKENIZER
+
     rewards  = []
-    
+
     for completion, task_id, seed, ff in zip(completions, task_ids, seeds, ff_steps):
         action = _extract_action(completion)
         try:
             env = CommerceOpsEnv()
             env.reset(task_id=task_id, seed=int(seed))
-            
+
             # Fast-forward the environment to the mid-episode state
             oracle_actions = _get_oracle_actions(task_id, int(seed))
             for a in oracle_actions[:ff]:
                 env.step(a)
-                
-            # Apply the model's chosen action
+
+            # Apply the model's chosen action and return immediate reward
             obs = env.step(action)
-            steps = env.state.step
-            
-            # Multi-step rollout: let the model finish the episode greedily
-            if model is not None and tokenizer is not None:
-                while not obs.done and steps < env.state.max_steps:
-                    next_action = _greedy_action(model, tokenizer, obs)
-                    obs = env.step(next_action)
-                    steps += 1
-                    
-            # Return the FINAL EPISODE SCORE as the reward, giving true sequence feedback
-            final = env.final_score()
-            rewards.append(float(final.get("score", 0.0)))
+            rewards.append(float(obs.reward))
         except Exception:
             rewards.append(-0.5)
     return rewards
@@ -555,12 +534,6 @@ def main() -> None:
             _lora_before = (name, p.detach().clone())
             break
 
-    # Wire the LoRA-wrapped model + tokenizer into the reward fn's globals
-    # so it can run the per-rollout greedy generation in the inner loop.
-    global _GLOBAL_MODEL, _GLOBAL_TOKENIZER
-    _GLOBAL_MODEL = model
-    _GLOBAL_TOKENIZER = tokenizer
-
     trainer = GRPOTrainer(
         model=model,
         args=training_args,
@@ -568,7 +541,7 @@ def main() -> None:
         reward_funcs=grpo_reward_fn,
         processing_class=tokenizer,
     )
-    print(f"\nStarting GRPO (multi-step rollout reward) — {TRAIN_STEPS} steps …")
+    print(f"\nStarting GRPO (single-step reward with fast-forwarded states) — {TRAIN_STEPS} steps …")
     train_result = trainer.train()
     print(f"Training done.  loss={round(train_result.training_loss, 4)}")
 
